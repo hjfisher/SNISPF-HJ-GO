@@ -1,7 +1,9 @@
 package pool
 
 import (
+	"context"
 	"crypto/tls"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -1617,4 +1619,90 @@ func weightedChoices(pairs []*PairStats, n int) []*PairStats {
 		tw = append(tw[:idx], tw[idx+1:]...)
 	}
 	return chosen
+}
+
+// Counts returns the number of active and draining pairs in the pool.
+func (p *ActivePool) Counts() (active, draining int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.pool), len(p.draining)
+}
+
+// StatsLine returns a machine-readable one-line snapshot of pool state,
+// computed directly from pool truth (port of bridge.py _snapshot()).
+func (m *ConnectionManager) StatsLine() string {
+	e := m.Explorer
+
+	e.mu.Lock()
+	all := make([]*PairStats, 0, len(e.Stats))
+	for _, ps := range e.Stats {
+		all = append(all, ps)
+	}
+	ipQuarantine := len(e.IPQuarantine)
+	sniQuarantine := len(e.SNIQuarantine)
+	e.mu.Unlock()
+
+	stable, weak, dead := 0, 0, 0
+	activeConns, totalConns := 0, 0
+	staticIPs := map[string]bool{}
+	dynamicIPs := map[string]bool{}
+	staticSNIs := map[string]bool{}
+	dynamicSNIs := map[string]bool{}
+
+	for _, ps := range all {
+		switch {
+		case !ps.Alive:
+			dead++
+		case ps.Probed && ps.CombinedLossRate() < e.LossThreshold:
+			stable++
+		case ps.Probed:
+			weak++
+		}
+		totalConns += ps.TotalConnections
+		if ps.IPOrigin == "dynamic" {
+			dynamicIPs[ps.IP] = true
+		} else {
+			staticIPs[ps.IP] = true
+		}
+		if ps.SNIOrigin == "dynamic" {
+			dynamicSNIs[ps.SNI] = true
+		} else {
+			staticSNIs[ps.SNI] = true
+		}
+	}
+
+	active, draining := m.Pool.Counts()
+	m.Pool.mu.Lock()
+	for _, ps := range m.Pool.pool {
+		activeConns += ps.ActiveConnections
+	}
+	for _, ps := range m.Pool.draining {
+		activeConns += ps.ActiveConnections
+	}
+	m.Pool.mu.Unlock()
+
+	return fmt.Sprintf(
+		"pairs=%d stable=%d weak=%d dead=%d unprobed=%d slots=%d draining=%d active_conns=%d total_conns=%d static_ips=%d dynamic_ips=%d static_snis=%d dynamic_snis=%d ip_quarantine=%d sni_quarantine=%d",
+		len(all), stable, weak, dead, len(all)-(stable+weak+dead),
+		active, draining, activeConns, totalConns,
+		len(staticIPs), len(dynamicIPs), len(staticSNIs), len(dynamicSNIs),
+		ipQuarantine, sniQuarantine,
+	)
+}
+
+// StartStatsTicker logs a STATS snapshot line every interval until ctx is
+// cancelled. The Android bridge parses these lines for live UI stats.
+func (m *ConnectionManager) StartStatsTicker(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				log.Printf("STATS %s", m.StatsLine())
+			}
+		}
+	}()
 }

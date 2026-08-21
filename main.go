@@ -407,6 +407,7 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 	connManager = pool.BuildConnectionManager(cfg, false)
 	if connManager != nil {
 		connManager.StartHealthLoop()
+		connManager.StartStatsTicker(ctx, 5*time.Second)
 		log.Printf("Connection pool active (IP-only) -- %d IP(s), %d active slot(s)",
 			len(uniqueIPs(connManager)), connManager.Pool.Slots)
 		var ipDisc *discovery.IPDiscovery
@@ -493,6 +494,7 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 	// Pool health loop + discovery
 	if connManager != nil {
 		connManager.StartHealthLoop()
+		connManager.StartStatsTicker(ctx, 5*time.Second)
 		log.Printf("Connection pool active -- %d pair(s), %d active slot(s)",
 			len(connManager.Explorer.Stats), connManager.Pool.Slots)
 
