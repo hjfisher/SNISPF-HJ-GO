@@ -166,7 +166,7 @@ func findInterface(remoteIP string) (string, int) {
 func (r *rawInjector) sniffLoop() {
 	buf := make([]byte, 65536)
 	for r.running {
-		n, err := unix.Recvfrom(r.fd, buf, 0)
+		n, _, err := unix.Recvfrom(r.fd, buf, 0)
 		if err != nil {
 			if !r.running {
 				break
@@ -358,7 +358,6 @@ func ipChecksum(iph []byte) uint16 {
 }
 
 func tcpChecksum(iph, tcpWithPayload []byte) uint16 {
-	ihl := int(iph[0]&0x0F) * 4
 	pseudo := make([]byte, 12)
 	copy(pseudo[0:4], iph[12:16])
 	copy(pseudo[4:8], iph[16:20])
