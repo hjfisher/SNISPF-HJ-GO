@@ -333,13 +333,22 @@ the client's TLS session with an automatically generated self-signed certificate
 then opens a *fresh* TLS connection to the real upstream with a brand-new,
 fingerprint-clean ClientHello.
 
+**Full (IP × SNI) pool in MITM mode:** by default (`MITM_USE_CLIENT_SNI=false`)
+the upstream ClientHello carries each pool pair's **fake SNI**, so the complete
+multi-IP × multi-SNI pool works here too — including health probes, eviction /
+quarantine / recycling, dynamic IP discovery *and* dynamic SNI discovery. DPI
+sees the fake SNI while the inner protocol (e.g. WebSocket Host header) still
+routes through the CDN. Set `MITM_USE_CLIENT_SNI=true` to send the client's real
+SNI upstream instead; then routing relies on SNI + Host and the pool collapses
+to **IP-only** (one SNI, no SNI eviction/recycling/discovery).
+
 | Key | Default | Description |
 |---|---|---|
 | `BYPASS_METHOD` | `"fragment"` | `"mitm"` = TLS-terminating relay |
 | `MITM_CERT_FILE` / `MITM_KEY_FILE` | `null` | Paths to an existing cert/key pair; auto-generated if absent |
 | `MITM_CERT_CN` | `"SNISPF-HJ"` | Common Name for the generated certificate |
 | `MITM_ALPN` | `["h2", "http/1.1"]` | ALPN offered upstream when the client sends no ALPN |
-| `MITM_USE_CLIENT_SNI` | `false` | Use the client's own SNI for the upstream TLS handshake |
+| `MITM_USE_CLIENT_SNI` | `false` | Use the client's own SNI for the upstream TLS handshake (collapses pool to IP-only) |
 | `FINGERPRINT` | `null` | Browser TLS fingerprint: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`, `randomizednoalpn`, `unsafe`, or pinned versions |
 
 ### `FINGERPRINT` — browser TLS fingerprinting (JA3/JA4)

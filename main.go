@@ -402,23 +402,42 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		}
 	}
 
-	// Connection pool (IP-only) + dynamic IP discovery
+	// Connection pool + dynamic discovery. Full (IP x SNI) pool when the
+	// upstream handshake sends the pool's fake SNI (default); collapses to
+	// IP-only when MITM_USE_CLIENT_SNI=true makes the SNI axis meaningless.
+	useClientSNI := cfg.GetBool("MITM_USE_CLIENT_SNI", false)
+	sniAxis := !useClientSNI
 	var connManager *pool.ConnectionManager
-	connManager = pool.BuildConnectionManager(cfg, false)
+	connManager = pool.BuildConnectionManager(cfg, sniAxis)
 	if connManager != nil {
 		connManager.StartHealthLoop()
 		connManager.StartStatsTicker(ctx, 5*time.Second)
-		log.Printf("Connection pool active (IP-only) -- %d IP(s), %d active slot(s)",
-			len(uniqueIPs(connManager)), connManager.Pool.Slots)
-		var ipDisc *discovery.IPDiscovery
-		ipDisc = discovery.BuildIPDiscovery(connManager, cfg)
+		if sniAxis {
+			log.Printf("Connection pool active -- %d pair(s), %d active slot(s)",
+				len(connManager.Explorer.Stats), connManager.Pool.Slots)
+		} else {
+			log.Printf("Connection pool active (IP-only) -- %d IP(s), %d active slot(s)",
+				len(uniqueIPs(connManager)), connManager.Pool.Slots)
+		}
+		ipDisc := discovery.BuildIPDiscovery(connManager, cfg)
 		if ipDisc != nil {
 			ipDisc.Start()
 			log.Printf("Dynamic IP discovery active -- batch=%d  interval=%ds", ipDisc.ScanBatch, int(ipDisc.ScanInterval.Seconds()))
 		} else {
 			log.Printf("Dynamic IP discovery: disabled (set DYNAMIC_IP_DISCOVERY=true in config to enable)")
 		}
-		log.Printf("Dynamic SNI discovery: skipped (IP-only pool in MITM mode)")
+		if sniAxis {
+			sniDisc := discovery.BuildSNIDiscovery(connManager, cfg)
+			if sniDisc != nil {
+				sniDisc.Start()
+				log.Printf("Dynamic SNI discovery active -- batch=%d  interval=%ds  source_refresh=%ds",
+					sniDisc.ScanBatch, int(sniDisc.ScanInterval.Seconds()), int(sniDisc.SourceRefreshInterval.Seconds()))
+			} else {
+				log.Printf("Dynamic SNI discovery: disabled (set DYNAMIC_SNI_DISCOVERY=true in config to enable)")
+			}
+		} else {
+			log.Printf("Dynamic SNI discovery: skipped (IP-only pool; MITM_USE_CLIENT_SNI=true)")
+		}
 	}
 
 	opts := &mitm.Options{
@@ -432,7 +451,7 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		MaskerRules:  maskerRules,
 		CertFile:     certPath,
 		KeyFile:      keyPath,
-		UseClientSNI: cfg.GetBool("MITM_USE_CLIENT_SNI", false),
+		UseClientSNI: useClientSNI,
 		ConnManager:  connManager,
 		Fingerprint:  fingerprintVal,
 	}

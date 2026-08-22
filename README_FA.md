@@ -318,13 +318,15 @@ IP های ضعیف برای همیشه حذف نمی‌شوند — به یک ل
 
 `mitm` یک روش دور زدن مثل `direct` / `combined` است — اما به‌جای فوروارد TCP ساده، ابزار **SSL مخصوص خودش را می‌سازد** با استفاده از uTLS درون‌پروسه: session TLS کلاینت را با یک گواهی self-signed خودکار ساخته‌شده خاتمه می‌دهد، سپس یک اتصال TLS *تازه* به upstream واقعی با یک ClientHello کاملاً جدید باز می‌کند.
 
+**Pool کامل (IP × SNI) در مود MITM:** به‌طور پیش‌فرض (`MITM_USE_CLIENT_SNI=false`)، ClientHello بالادست **SNI جعلی** هر جفت pool را حمل می‌کند، پس pool کامل چند-IP × چند-SNI این‌جا هم کار می‌کند — شامل پروب‌های سلامت، حذف/قرنطینه/بازیافت، کشف خودکار IP *و* کشف خودکار SNI. DPI فقط SNI جعلی را می‌بیند در حالی که پروتکل داخلی (مثلاً هدر Host وب‌سوکت) همچنان از طریق CDN مسیریابی می‌شود. اگر `MITM_USE_CLIENT_SNI=true` بگذارید، SNI واقعی کلاینت به بالادست می‌رود؛ آن‌وقت مسیریابی به SNI + Host وابسته است و pool به حالت **فقط-IP** فرو می‌ریزد (یک SNI، بدون حذف/بازیافت/کشف SNI).
+
 | کلید | پیش‌فرض | توضیح |
 |---|---|---|
 | `BYPASS_METHOD` | `"fragment"` | `"mitm"` = رلهٔ قطع‌کنندهٔ TLS |
 | `MITM_CERT_FILE` / `MITM_KEY_FILE` | `null` | مسیر گواهی/کلید موجود؛ اگر نبود خودکار ساخته می‌شود |
 | `MITM_CERT_CN` | `"SNISPF-HJ"` | Common Name گواهی ساخته‌شده |
 | `MITM_ALPN` | `["h2", "http/1.1"]` | ALPN پیشنهادشده بالادست وقتی کلاینت ALPN نفرستد |
-| `MITM_USE_CLIENT_SNI` | `false` | استفاده از SNI خود کلاینت برای TLS بالادست |
+| `MITM_USE_CLIENT_SNI` | `false` | استفاده از SNI خود کلاینت برای TLS بالادست (pool را به فقط-IP فرو می‌ریزد) |
 | `FINGERPRINT` | `null` | فینگرپرینت مرورگر: `chrome`، `firefox`، `safari`، `ios`، `android`، `edge`، `360`، `qq`، `random`، `randomized`، `randomizednoalpn`، `unsafe` |
 
 ### `FINGERPRINT` — اثر انگشت TLS مرورگر (JA3/JA4)
