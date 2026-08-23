@@ -333,14 +333,30 @@ the client's TLS session with an automatically generated self-signed certificate
 then opens a *fresh* TLS connection to the real upstream with a brand-new,
 fingerprint-clean ClientHello.
 
-**Full (IP × SNI) pool in MITM mode:** by default (`MITM_USE_CLIENT_SNI=false`)
-the upstream ClientHello carries each pool pair's **fake SNI**, so the complete
-multi-IP × multi-SNI pool works here too — including health probes, eviction /
-quarantine / recycling, dynamic IP discovery *and* dynamic SNI discovery. DPI
-sees the fake SNI while the inner protocol (e.g. WebSocket Host header) still
-routes through the CDN. Set `MITM_USE_CLIENT_SNI=true` to send the client's real
-SNI upstream instead; then routing relies on SNI + Host and the pool collapses
-to **IP-only** (one SNI, no SNI eviction/recycling/discovery).
+**The SNI reality — you cannot show different SNIs to your ISP vs Cloudflare:**
+both endpoints see the *exact same bytes* on the wire. If you put a fake SNI
+in the upstream ClientHello, Cloudflare receives that fake SNI and will reject
+or misroute the request (most Cloudflare worker / VLESS setups fail with fake
+SNI). The only working design:
+
+- `MITM_USE_CLIENT_SNI=true` (default, recommended): the upstream ClientHello
+  carries the **client's real SNI** so Cloudflare routes correctly.
+- `FINALMASK_TCP` enabled: the upstream ClientHello is **fragmented on the
+  wire** (tls-repack semantics — valid TLS record boundaries preserved) so DPI
+  cannot reassemble/read the SNI, while the server still parses it perfectly.
+
+With `MITM_USE_CLIENT_SNI=true` the pool collapses to **IP-only** (one SNI, no
+SNI eviction/recycling/discovery). The `MITM_USE_CLIENT_SNI=false` mode (fake
+SNI pool) remains available for edge cases where the CDN ignores SNI mismatch.
+
+| Key | Default | Description |
+|---|---|---|
+| `BYPASS_METHOD` | `"fragment"` | `"mitm"` = TLS-terminating relay |
+| `MITM_CERT_FILE` / `MITM_KEY_FILE` | `null` | Paths to an existing cert/key pair; auto-generated if absent |
+| `MITM_CERT_CN` | `"SNISPF-HJ"` | Common Name for the generated certificate |
+| `MITM_ALPN` | `["h2", "http/1.1"]` | ALPN offered upstream when the client sends no ALPN |
+| `MITM_USE_CLIENT_SNI` | `true` | Use the client's real SNI upstream (CF routes correctly); `FINALMASK_TCP` fragments it on the wire |
+| `FINGERPRINT` | `null` | Browser TLS fingerprint: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`, `randomizednoalpn`, `unsafe`, or pinned versions |
 
 | Key | Default | Description |
 |---|---|---|
@@ -439,6 +455,7 @@ a JSON array of `fragment` rules:
 | `fragment` | Splits ClientHello at the SNI boundary into multiple TCP segments | None |
 | `fake_sni` | Sends decoy ClientHello(s) before the real one | Root for raw sockets; fragments without |
 | `combined` | Both simultaneously — recommended | Same as `fake_sni` |
+| `mitm` | TLS-terminating relay with in-process uTLS fingerprint; use with FINALMASK_TCP to hide real SNI from DPI | None (root for raw injection optional) |
 
 ---
 

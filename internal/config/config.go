@@ -18,9 +18,12 @@ func DefaultConfig() *Config {
 	raw := map[string]interface{}{
 		"LISTEN_HOST":            "0.0.0.0",
 		"LISTEN_PORT":            40443,
-		"CONNECT_IP":             "104.18.38.202",
+		// CONNECT_IP / FAKE_SNI stay nil so that "user did not set this"
+		// checks (Get(key, nil) == nil) behave correctly; call sites carry
+		// their own string fallbacks.
+		"CONNECT_IP":             nil,
 		"CONNECT_PORT":           443,
-		"FAKE_SNI":               "cdnjs.cloudflare.com",
+		"FAKE_SNI":               nil,
 		"BYPASS_METHOD":          "fragment",
 		"FRAGMENT_STRATEGY":      "sni_split",
 		"FRAGMENT_DELAY":         0.1,

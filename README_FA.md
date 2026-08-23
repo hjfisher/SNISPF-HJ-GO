@@ -318,7 +318,13 @@ IP های ضعیف برای همیشه حذف نمی‌شوند — به یک ل
 
 `mitm` یک روش دور زدن مثل `direct` / `combined` است — اما به‌جای فوروارد TCP ساده، ابزار **SSL مخصوص خودش را می‌سازد** با استفاده از uTLS درون‌پروسه: session TLS کلاینت را با یک گواهی self-signed خودکار ساخته‌شده خاتمه می‌دهد، سپس یک اتصال TLS *تازه* به upstream واقعی با یک ClientHello کاملاً جدید باز می‌کند.
 
-**Pool کامل (IP × SNI) در مود MITM:** به‌طور پیش‌فرض (`MITM_USE_CLIENT_SNI=false`)، ClientHello بالادست **SNI جعلی** هر جفت pool را حمل می‌کند، پس pool کامل چند-IP × چند-SNI این‌جا هم کار می‌کند — شامل پروب‌های سلامت، حذف/قرنطینه/بازیافت، کشف خودکار IP *و* کشف خودکار SNI. DPI فقط SNI جعلی را می‌بیند در حالی که پروتکل داخلی (مثلاً هدر Host وب‌سوکت) همچنان از طریق CDN مسیریابی می‌شود. اگر `MITM_USE_CLIENT_SNI=true` بگذارید، SNI واقعی کلاینت به بالادست می‌رود؛ آن‌وقت مسیریابی به SNI + Host وابسته است و pool به حالت **فقط-IP** فرو می‌ریزد (یک SNI، بدون حذف/بازیافت/کشف SNI).
+**واقعیت SNI — شما نمی‌توانید SNI متفاوتی به ISP و Cloudflare نشان دهید:**
+هر دو نهاییتهما *بایت‌های دقیقاً یکسان* را روی سیم می‌بینند. اگر SNI جعلی در ClientHello بالادست بگذارید، Cloudflare همان SNI جعلی را دریافت می‌کند و درخواست را رد یا مسیریابی اشتباه می‌کند (اکثر راه‌اندازی‌های Cloudflare worker / VLESS با SNI جعلی شکست می‌خورند). طراحی 유일한 که کار می‌کند:
+
+- `MITM_USE_CLIENT_SNI=true` (پیش‌فرض، توصیه‌شده): ClientHello بالادست **SNI واقعی کلاینت** را حمل می‌کند تا Cloudflare درست مسیریابی کند.
+- `FINALMASK_TCP` فعال: ClientHello بالادست روی سیم **قطعه‌قطعه می‌شود** (معنای tls-repack — مرزهای رکورد TLS معتبر حفظ می‌شوند) تا DPI نتواند SNI را بازسازی/خواند، در حالی که سرور همچنان به خوبی آن را پارس می‌کند.
+
+با `MITM_USE_CLIENT_SNI=true` pool به حالت **فقط-IP** فرو می‌ریزد (یک SNI، بدون حذف/بازیافت/کشف SNI). حالت `MITM_USE_CLIENT_SNI=false` (pool با SNI جعلی) همچنان برای موارد لبه در دسترس است که CDN از mismatch SNI چشم‌پوشی می‌کند.
 
 | کلید | پیش‌فرض | توضیح |
 |---|---|---|
@@ -326,7 +332,7 @@ IP های ضعیف برای همیشه حذف نمی‌شوند — به یک ل
 | `MITM_CERT_FILE` / `MITM_KEY_FILE` | `null` | مسیر گواهی/کلید موجود؛ اگر نبود خودکار ساخته می‌شود |
 | `MITM_CERT_CN` | `"SNISPF-HJ"` | Common Name گواهی ساخته‌شده |
 | `MITM_ALPN` | `["h2", "http/1.1"]` | ALPN پیشنهادشده بالادست وقتی کلاینت ALPN نفرستد |
-| `MITM_USE_CLIENT_SNI` | `false` | استفاده از SNI خود کلاینت برای TLS بالادست (pool را به فقط-IP فرو می‌ریزد) |
+| `MITM_USE_CLIENT_SNI` | `true` | استفاده از SNI واقعی کلاینت برای TLS بالادست (CF درست مسیریابی می‌کند); `FINALMASK_TCP` آن را روی سیم قطعه‌قطعه می‌کند |
 | `FINGERPRINT` | `null` | فینگرپرینت مرورگر: `chrome`، `firefox`، `safari`، `ios`، `android`، `edge`، `360`، `qq`، `random`، `randomized`، `randomizednoalpn`، `unsafe` |
 
 ### `FINGERPRINT` — اثر انگشت TLS مرورگر (JA3/JA4)
@@ -403,6 +409,7 @@ IP های ضعیف برای همیشه حذف نمی‌شوند — به یک ل
 | `fragment` | شکستن ClientHello در مرز SNI به چند بخش TCP | هیچ |
 | `fake_sni` | ارسال ClientHello جعلی قبل از واقعی | root برای raw socket؛ بدون آن fragmentation |
 | `combined` | هر دو همزمان — توصیه‌شده | مثل fake_sni |
+| `mitm` | رلهٔ TLS-terminating با فینگرپرینت uTLS درون‌پروسه؛ با FINALMASK_TCP برای پنهان کردن SNI واقعی از DPI | هیچ (root برای raw injection اختیاری) |
 
 ---
 

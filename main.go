@@ -349,7 +349,9 @@ func main() {
 		fmt.Printf("Error: Invalid connect port: %v\n", cfg.Get("CONNECT_PORT", nil))
 		os.Exit(1)
 	}
-	cfg.Set("CONNECT_IP", utils.ResolveHost(cfg.GetString("CONNECT_IP", "104.18.38.202")))
+	if cfg.Get("CONNECT_IP", nil) != nil {
+		cfg.Set("CONNECT_IP", utils.ResolveHost(cfg.GetString("CONNECT_IP", "")))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -399,6 +401,19 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		if _, err := tlsutil.ClientHelloID(resolved); err != nil {
 			fmt.Printf("\n  Error: %v\n", err)
 			os.Exit(1)
+		}
+	}
+
+	// Backfill singular upstream keys from the list forms so single-target
+	// fallbacks (pool disabled) and MITM defaults use what's configured.
+	if cfg.Get("CONNECT_IP", nil) == nil {
+		if ips := cfg.GetStringList("CONNECT_IPS"); len(ips) > 0 {
+			cfg.Set("CONNECT_IP", ips[0])
+		}
+	}
+	if cfg.Get("FAKE_SNI", nil) == nil {
+		if snis := cfg.GetStringList("FAKE_SNIS"); len(snis) > 0 {
+			cfg.Set("FAKE_SNI", snis[0])
 		}
 	}
 

@@ -42,6 +42,31 @@ type Options struct {
 	FingerprintBin string
 }
 
+// maskedConn wraps the upstream socket so every write is routed through a
+// per-connection FinalMasker. This puts the mask at the wire level, which
+// means the upstream TLS handshake flight — the ClientHello carrying the
+// SNI — is fragmented before DPI can read it (mirrors xray finalmask
+// semantics: the masker sits on the outbound socket for the connection's
+// lifetime; rules like "tlshello" / "1-3" simply stop applying once their
+// write window passes).
+type maskedConn struct {
+	net.Conn
+	masker *finalmask.FinalMasker
+}
+
+func (c *maskedConn) Write(b []byte) (int, error) {
+	if c.masker == nil {
+		return c.Conn.Write(b)
+	}
+	if err := c.masker.Send(func(p []byte) error {
+		_, werr := c.Conn.Write(p)
+		return werr
+	}, b); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
 // Start runs the MITM relay server until ctx is cancelled.
 func Start(ctx context.Context, opts *Options) error {
 	cert, err := tls.LoadX509KeyPair(opts.CertFile, opts.KeyFile)
@@ -166,7 +191,7 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 		serverName = clientSNI
 	}
 
-	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites)
+	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, maskerTemplate)
 	if err != nil {
 		log.Printf("[%s] upstream connect %s:%d failed: %v", peer, activeIP, opts.ConnectPort, err)
 		releasePair(true)
@@ -179,37 +204,25 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 	if pair != nil {
 		loss = fmt.Sprintf(" | pool_loss=%.1f%%", pair.CombinedLossRate()*100)
 	}
-	log.Printf("[%s] MITM relay: client=%s sni=%s alpn=%s -> %s:%d sni=%s cipherSuites=%v fingerprint=%s%s",
-		peer, peer, clientSNI, clientALPN, activeIP, opts.ConnectPort, serverName, opts.CipherSuites, opts.Fingerprint, loss)
+	log.Printf("[%s] MITM relay: client=%s sni=%s alpn=%s -> %s:%d sni=%s cipherSuites=%v fingerprint=%s finalmask=%d layer(s)%s",
+		peer, peer, clientSNI, clientALPN, activeIP, opts.ConnectPort, serverName, opts.CipherSuites, opts.Fingerprint, maskerTemplate.LayerCount(), loss)
 
-	masker := maskerTemplate.Clone()
 	done := make(chan struct{})
 	var serverRespondedMu sync.Mutex
 	serverResponded := false
 
-	sink := func(chunk []byte) error {
-		_, err := up.Write(chunk)
-		return err
-	}
-
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// C->S
+	// C->S (finalmask fragmentation is applied inside maskedConn on the wire)
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, bufferSize)
 		for {
 			n, err := reader.Read(buf)
 			if n > 0 {
-				if masker != nil {
-					if mErr := masker.Send(sink, buf[:n]); mErr != nil {
-						break
-					}
-				} else {
-					if _, wErr := up.Write(buf[:n]); wErr != nil {
-						break
-					}
+				if _, wErr := up.Write(buf[:n]); wErr != nil {
+					break
 				}
 			}
 			if err != nil {
@@ -289,15 +302,20 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 // openUpstream connects to the real upstream and completes TLS. With a
 // fingerprint profile the handshake is driven in-process by uTLS (a
 // byte-perfect browser ClientHello); otherwise Go's crypto/tls builds it.
-func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16) (net.Conn, error) {
+// The raw socket is wrapped in a maskedConn so the handshake flight —
+// including the ClientHello that carries the SNI — passes through
+// finalmask fragmentation on the wire, and every later C->S write too.
+func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16, maskerTemplate *finalmask.FinalMasker) (net.Conn, error) {
 	raw, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(activeIP, strconv.Itoa(connectPort)))
 	if err != nil {
 		return nil, err
 	}
+	var upstreamConn net.Conn = raw
+	upstreamConn = &maskedConn{Conn: raw, masker: maskerTemplate.Clone()}
 
 	fpName := tlsutil.ResolveFingerprint(fingerprint)
 	if fpName == "" {
-		tconn := tls.Client(raw, &tls.Config{
+		tconn := tls.Client(upstreamConn, &tls.Config{
 			ServerName:         serverName,
 			InsecureSkipVerify: true,
 			NextProtos:         alpn,
@@ -305,7 +323,7 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 		})
 		_ = tconn.SetDeadline(time.Now().Add(handshakeTimeout))
 		if err := tconn.HandshakeContext(ctx); err != nil {
-			_ = raw.Close()
+			_ = upstreamConn.Close()
 			return nil, err
 		}
 		_ = tconn.SetDeadline(time.Time{})
@@ -314,11 +332,11 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 
 	id, err := tlsutil.ClientHelloID(fpName)
 	if err != nil {
-		_ = raw.Close()
+		_ = upstreamConn.Close()
 		return nil, err
 	}
 	utls.EnableWeakCiphers()
-	uconn := utls.UClient(raw, &utls.Config{
+	uconn := utls.UClient(upstreamConn, &utls.Config{
 		ServerName:         serverName,
 		InsecureSkipVerify: true,
 		NextProtos:         alpn,
@@ -326,7 +344,7 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 	uconn.SetSNI(serverName)
 	_ = uconn.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := uconn.HandshakeContext(ctx); err != nil {
-		_ = raw.Close()
+		_ = upstreamConn.Close()
 		return nil, err
 	}
 	_ = uconn.SetDeadline(time.Time{})
