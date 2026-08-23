@@ -1,0 +1,70 @@
+project_name: snispf-hj-go
+builds:
+  - main: ./main.go
+    binary: snispf-hj-go
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    flags:
+      - -trimpath
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - config.json
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+snapshot:
+  version_template: "{{ .Tag }}-next"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+release:
+  draft: false
+  prerelease: auto
+  name_template: "SNISPF-HJ-GO v{{ .Version }}"
+  header: |
+    # SNISPF-HJ-GO v{{ .Version }}
+    
+    Cross-Platform DPI Bypass Tool with MITM Support
+    
+    ## Platforms
+    - Windows (amd64, arm64)
+    - Linux (amd64, arm64)
+    - macOS (amd64, arm64)
+    
+    ## Features
+    - MITM TLS decryption/repacking with uTLS fingerprinting
+    - Fragmentation bypass (sni_split, half, multi, tls_record_frag)
+    - Fake SNI injection with raw sockets
+    - Dynamic IP/SNI discovery
+    - Connection pooling with health checks
+    - FinalMask TCP fragmentation
+  footer: |
+    ---
+    **SHA256 checksums:** [{{ .ProjectName }}_{{ .Version }}_checksums.txt]({{ .ProjectName }}_{{ .Version }}_checksums.txt)
+    
+    **Installation:** Download the archive for your platform, extract, and run.
+    
+    **Configuration:** See [config.json](config.json) for all options. Generate with `snispf-hj-go --generate-config config.json`
+    
+    **MITM Mode:** Use `--method mitm` and pin the printed certificate SHA-256 in your client.

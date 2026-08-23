@@ -26,7 +26,7 @@ import (
 	"snispf-hj-go/internal/utils"
 )
 
-const version = "0.9"
+const version = "1.0.0"
 
 const banner = `
 ███████╗███╗   ██╗██╗███████╗██████╗ ███████╗    ██╗  ██╗     ██╗       ██████╗  ██████╗ 
