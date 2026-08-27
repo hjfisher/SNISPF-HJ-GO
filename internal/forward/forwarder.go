@@ -26,8 +26,8 @@ type ForwardOptions struct {
 	ConnectPort  int
 	FakeSNI      string
 	Strategy     BypassStrategy
-	InterfaceIP  string
-	RawInjector  RawInjector
+	InterfaceIP  *string
+	RawInjector  *RawInjector
 	ConnManager  *pool.ConnectionManager
 	Masker       *finalmask.FinalMasker
 	CipherSuites []uint16
@@ -55,12 +55,16 @@ func StartServer(ctx context.Context, opts *ForwardOptions) error {
 	if opts.CipherSuites != nil {
 		log.Printf("Custom cipherSuites: ENABLED (%d suite(s))", len(opts.CipherSuites))
 	}
-	if opts.RawInjector != nil {
+	if opts.RawInjector != nil && *opts.RawInjector != nil {
 		log.Printf("Raw packet injection: ACTIVE (seq_id trick enabled)")
 	} else {
 		log.Printf("Raw packet injection: not available (fragmentation only)")
 	}
-	log.Printf("Interface IP: %s", interfaceLabel(opts.InterfaceIP))
+	if opts.InterfaceIP != nil {
+		log.Printf("Interface IP: %s", interfaceLabel(*opts.InterfaceIP))
+	} else {
+		log.Printf("Interface IP: %s", interfaceLabel(""))
+	}
 	log.Printf("====================================================================")
 	log.Printf("Ready! Configure your application to use:")
 	log.Printf("  Address: 127.0.0.1:%d", opts.ListenPort)
@@ -158,12 +162,12 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 
 	// ── Open the outgoing socket (raw-injector registration before SYN) ──
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	if opts.RawInjector != nil {
+	if opts.RawInjector != nil && *opts.RawInjector != nil {
 		fakeHello := tlsutil.BuildClientHelloRecord(activeSNI, opts.CipherSuites)
-		dialer.Control = rawDialControl(opts.RawInjector, fakeHello)
+		dialer.Control = rawDialControl(*opts.RawInjector, fakeHello)
 	}
-	if opts.InterfaceIP != "" {
-		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(opts.InterfaceIP)}
+	if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
 	}
 
 	server, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(activeIP, strconv.Itoa(opts.ConnectPort)))
@@ -176,8 +180,8 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 	if tcp, ok := server.(*net.TCPConn); ok {
 		localPort = tcp.LocalAddr().(*net.TCPAddr).Port
 	}
-	if opts.RawInjector != nil && localPort > 0 {
-		defer opts.RawInjector.CleanupPort(localPort)
+	if opts.RawInjector != nil && *opts.RawInjector != nil && localPort > 0 {
+		defer (*opts.RawInjector).CleanupPort(localPort)
 	}
 
 	loss := ""

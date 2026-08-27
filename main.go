@@ -500,30 +500,67 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 	}
 
 	connectIP := cfg.GetString("CONNECT_IP", "104.18.38.202")
-	interfaceIP := utils.GetDefaultInterfaceIPv4(connectIP)
-	log.Printf("Default interface: %s", interfaceLabel(interfaceIP))
 
-	// Raw injector
+	// Use pointers so they can be updated on network interface change
+	interfaceIP := utils.GetDefaultInterfaceIPv4(connectIP)
+	interfaceIPPtr := &interfaceIP
+
+	// Raw injector (only for fake_sni and combined methods)
 	var rawInjector forward.RawInjector
-	if !noRaw && (method == "fake_sni" || method == "combined") && interfaceIP != "" {
-		rawInjector = forward.NewRawInjector(interfaceIP, connectIP, cfg.GetInt("CONNECT_PORT", 443))
-		if rawInjector == nil {
+	rawInjectorPtr := &rawInjector
+
+	createRawInjector := func(ip string) forward.RawInjector {
+		if noRaw || ip == "" || (method != "fake_sni" && method != "combined") {
+			return nil
+		}
+		inj := forward.NewRawInjector(ip, connectIP, cfg.GetInt("CONNECT_PORT", 443))
+		if inj == nil {
 			if method == "fake_sni" {
 				log.Printf("Raw sockets not available (need root/CAP_NET_RAW). fake_sni will fragment the real ClientHello.")
 			} else {
 				log.Printf("Raw sockets not available. Using fragmentation bypass.")
 			}
-		} else if !rawInjector.Start() {
-			log.Printf("Raw injector failed to start.")
-			rawInjector = nil
+			return nil
 		}
-	}
-	if rawInjector != nil {
-		defer rawInjector.Stop()
+		if !inj.Start() {
+			log.Printf("Raw injector failed to start.")
+			return nil
+		}
+		return inj
 	}
 
-	// Build the bypass strategy
-	strategy := buildStrategy(cfg, rawInjector)
+	// Build the bypass strategy first
+	strategy := buildStrategy(cfg, nil)
+
+	// Create initial raw injector
+	rawInjector = createRawInjector(interfaceIP)
+	*rawInjectorPtr = rawInjector
+
+	// Update strategy's raw injector if it supports it
+	if s, ok := strategy.(interface{ SetRawInjector(forward.RawInjector) }); ok {
+		s.SetRawInjector(rawInjector)
+	}
+
+	// Network monitor to detect interface changes and recreate raw injector
+	netMonitor := utils.NewNetworkMonitor(connectIP, 15*time.Second, func(newIP string) {
+		log.Printf("Network change detected, recreating raw injector with new interface: %s", newIP)
+		*interfaceIPPtr = newIP
+
+		// Stop old raw injector
+		if *rawInjectorPtr != nil {
+			(*rawInjectorPtr).Stop()
+		}
+		// Create new raw injector with new interface IP
+		newInj := createRawInjector(newIP)
+		*rawInjectorPtr = newInj
+
+		// Update strategy's raw injector if it supports it
+		if s, ok := strategy.(interface{ SetRawInjector(forward.RawInjector) }); ok {
+			s.SetRawInjector(newInj)
+		}
+	})
+	netMonitor.Start()
+	defer netMonitor.Stop()
 
 	// Pool health loop + discovery
 	if connManager != nil {
@@ -554,10 +591,17 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 		}
 	}
 
-	masker := finalmask.NewFinalMasker(config.LoadFinalmaskRules(cfg.Get("FINALMASK_TCP", nil)))
-	if masker != nil {
-		log.Printf("FinalMask TCP active -- initial ClientHello and C->S traffic go through %d fragment layer(s)",
-			masker.LayerCount())
+	// finalmask is disabled in direct/forward modes (non-MITM) to avoid
+	// handshake failures with servers that don't expect fragmented ClientHellos.
+	// Only MITM mode uses finalmask on the upstream handshake.
+	var masker *finalmask.FinalMasker
+	methodLower := strings.ToLower(cfg.GetString("BYPASS_METHOD", "fragment"))
+	if methodLower == "mitm" {
+		masker = finalmask.NewFinalMasker(config.LoadFinalmaskRules(cfg.Get("FINALMASK_TCP", nil)))
+		if masker != nil {
+			log.Printf("FinalMask TCP active -- initial ClientHello and C->S traffic go through %d fragment layer(s)",
+				masker.LayerCount())
+		}
 	}
 
 	cipherSuites := tlsutil.ParseCipherSuiteIDs(cfg.Get("CIPHER_SUITES", nil))
@@ -569,8 +613,8 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 		ConnectPort:  cfg.GetInt("CONNECT_PORT", 443),
 		FakeSNI:      cfg.GetString("FAKE_SNI", "cdnjs.cloudflare.com"),
 		Strategy:     strategy,
-		InterfaceIP:  interfaceIP,
-		RawInjector:  rawInjector,
+		InterfaceIP:  interfaceIPPtr,
+		RawInjector:  rawInjectorPtr,
 		ConnManager:  connManager,
 		Masker:       masker,
 		CipherSuites: cipherSuites,

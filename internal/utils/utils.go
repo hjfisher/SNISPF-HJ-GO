@@ -1,7 +1,10 @@
 package utils
 
 import (
+	"log"
 	"net"
+	"sync"
+	"time"
 )
 
 // GetDefaultInterfaceIPv4 returns the IPv4 address of the default interface by
@@ -20,6 +23,86 @@ func GetDefaultInterfaceIPv4(dest string) string {
 		return ""
 	}
 	return addr.IP.String()
+}
+
+// NetworkMonitor watches for changes in the default interface IPv4 address
+// and invokes a callback when a change is detected.
+type NetworkMonitor struct {
+	dest         string
+	interval     time.Duration
+	callback     func(newIP string)
+	mu           sync.Mutex
+	lastIP       string
+	stop         chan struct{}
+	wg           sync.WaitGroup
+}
+
+// NewNetworkMonitor creates a new network monitor.
+func NewNetworkMonitor(dest string, interval time.Duration, callback func(newIP string)) *NetworkMonitor {
+	if dest == "" {
+		dest = "8.8.8.8"
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	return &NetworkMonitor{
+		dest:     dest,
+		interval: interval,
+		callback: callback,
+		lastIP:   GetDefaultInterfaceIPv4(dest),
+		stop:     make(chan struct{}),
+	}
+}
+
+// Start begins monitoring in a background goroutine.
+func (m *NetworkMonitor) Start() {
+	m.wg.Add(1)
+	go m.run()
+}
+
+// Stop stops the monitor.
+func (m *NetworkMonitor) Stop() {
+	close(m.stop)
+	m.wg.Wait()
+}
+
+// run is the monitoring loop.
+func (m *NetworkMonitor) run() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(m.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stop:
+			return
+		case <-ticker.C:
+			m.check()
+		}
+	}
+}
+
+func (m *NetworkMonitor) check() {
+	newIP := GetDefaultInterfaceIPv4(m.dest)
+	m.mu.Lock()
+	if newIP != "" && newIP != m.lastIP {
+		oldIP := m.lastIP
+		m.lastIP = newIP
+		m.mu.Unlock()
+		log.Printf("Network interface changed: %s -> %s", oldIP, newIP)
+		if m.callback != nil {
+			m.callback(newIP)
+		}
+		return
+	}
+	m.mu.Unlock()
+}
+
+// GetCurrentIP returns the last known interface IP.
+func (m *NetworkMonitor) GetCurrentIP() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastIP
 }
 
 // ResolveHost resolves a hostname to an IP address string. On failure the

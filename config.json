@@ -3,7 +3,7 @@
   "LISTEN_PORT": 40443,
   "CONNECT_PORT": 443,
 "_comment_method": "Bypass mode: 'direct' (no spoofing), 'fragment' (ClientHello fragmentation), 'fake_sni' (decoy SNI), 'combined' (fragment + fake SNI), or 'mitm' (TLS-terminating relay — the tool builds its own self-signed SSL, decrypts the client's session, then re-encrypts to the real upstream with a fresh ClientHello, i.e. the tls-decrypt / tls-repack-frommitm idea).",
-  "BYPASS_METHOD": "mitm",
+  "BYPASS_METHOD": "direct",
   "FRAGMENT_STRATEGY": "sni_split",
   "FRAGMENT_DELAY": 0.1,
   "FAKE_SNI_METHOD": "prefix_fake",

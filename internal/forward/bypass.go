@@ -166,3 +166,15 @@ func (b *CombinedBypass) Apply(server net.Conn, fakeSNI string, firstData []byte
 	}
 	return nil
 }
+
+// SetRawInjector updates the raw injector used by this strategy.
+// Used when network interface changes and a new raw injector is created.
+func (b *FakeSNIBypass) SetRawInjector(inj RawInjector) {
+	b.RawInjector = inj
+}
+
+// SetRawInjector updates the raw injector used by this strategy.
+// Used when network interface changes and a new raw injector is created.
+func (b *CombinedBypass) SetRawInjector(inj RawInjector) {
+	b.RawInjector = inj
+}
