@@ -488,6 +488,19 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 	method := strings.ToLower(cfg.GetString("BYPASS_METHOD", "fragment"))
 	sniAxis := method != "direct" && method != "mitm"
 
+	// Backfill singular upstream keys from the list forms so single-target
+	// fallbacks (pool disabled) and forward modes use what's configured.
+	if cfg.Get("CONNECT_IP", nil) == nil {
+		if ips := cfg.GetStringList("CONNECT_IPS"); len(ips) > 0 {
+			cfg.Set("CONNECT_IP", ips[0])
+		}
+	}
+	if cfg.Get("FAKE_SNI", nil) == nil {
+		if snis := cfg.GetStringList("FAKE_SNIS"); len(snis) > 0 {
+			cfg.Set("FAKE_SNI", snis[0])
+		}
+	}
+
 	connManager := pool.BuildConnectionManager(cfg, sniAxis)
 	if connManager != nil {
 		firstKey := firstPairKey(connManager)
