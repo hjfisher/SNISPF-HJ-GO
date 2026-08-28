@@ -4,7 +4,7 @@ before:
   hooks:
     - curl -sSL https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -o /tmp/windivert.zip
     - rm -rf windivert && mkdir -p windivert && unzip -o /tmp/windivert.zip -d /tmp/wd_extract >/dev/null
-    - cp /tmp/wd_extract/WinDivert-2.2.2-A/x86_64/* windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert64.sys windivert/ 2>/dev/null; cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert32.sys windivert/ 2>/dev/null; true
+    - cp /tmp/wd_extract/WinDivert-2.2.2-A/x64/WinDivert.dll windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/x86/WinDivert64.sys windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/x86/WinDivert32.sys windivert/ && true
 builds:
   - id: unix
     main: ./main.go
