@@ -54,7 +54,12 @@ archives:
     files:
       - README.md
       - config.json
-      - windivert/*
+      - src: windivert/WinDivert.dll
+        dst: WinDivert.dll
+      - src: windivert/WinDivert64.sys
+        dst: WinDivert64.sys
+      - src: windivert/WinDivert32.sys
+        dst: WinDivert32.sys
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
