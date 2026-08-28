@@ -417,11 +417,12 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		}
 	}
 
-	// Connection pool + dynamic discovery. Full (IP x SNI) pool when the
-	// upstream handshake sends the pool's fake SNI (default); collapses to
-	// IP-only when MITM_USE_CLIENT_SNI=true makes the SNI axis meaningless.
+	// Connection pool + dynamic discovery. Full (IP x SNI) pool so the
+	// raw-injection decoy can rotate SNIs per connection. MITM_USE_CLIENT_SNI
+	// only controls the upstream routing SNI (real client SNI vs pool SNI),
+	// not the pool structure.
 	useClientSNI := cfg.GetBool("MITM_USE_CLIENT_SNI", false)
-	sniAxis := !useClientSNI
+	sniAxis := true
 	var connManager *pool.ConnectionManager
 	connManager = pool.BuildConnectionManager(cfg, sniAxis)
 	if connManager != nil {
@@ -447,12 +448,10 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 				sniDisc.Start()
 				log.Printf("Dynamic SNI discovery active -- batch=%d  interval=%ds  source_refresh=%ds",
 					sniDisc.ScanBatch, int(sniDisc.ScanInterval.Seconds()), int(sniDisc.SourceRefreshInterval.Seconds()))
-			} else {
-				log.Printf("Dynamic SNI discovery: disabled (set DYNAMIC_SNI_DISCOVERY=true in config to enable)")
-			}
-		} else {
-			log.Printf("Dynamic SNI discovery: skipped (IP-only pool; MITM_USE_CLIENT_SNI=true)")
+} else {
+			log.Printf("Dynamic SNI discovery: disabled (set DYNAMIC_SNI_DISCOVERY=true in config to enable)")
 		}
+	}
 	}
 
 	// Raw injection on the MITM upstream (fake-SNI seq_id trick). Requires a
@@ -498,7 +497,6 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		UseRawInjection: useMITMRaw,
 		RawInjector:     mitmRawPtr,
 		InterfaceIP:     &mitmInterfaceIP,
-		RawFakeSNI:      cfg.GetString("MITM_RAW_FAKE_SNI", ""),
 	}
 	if err := mitm.Start(ctx, opts); err != nil {
 		fmt.Printf("\nError: %v\n", err)

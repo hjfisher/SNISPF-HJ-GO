@@ -43,12 +43,12 @@ type Options struct {
 	FingerprintBin string
 	// Raw injection on the upstream connection (seq_id trick). When enabled
 	// and a raw backend is available, the MITM upstream dial is registered
-	// with the raw injector so an out-of-window fake-SNI hello (RawFakeSNI,
-	// defaulting to FakeSNI) is injected, hiding the real routing SNI.
+	// with the raw injector so an out-of-window fake-SNI hello is injected.
+	// The decoy SNI shown to the ISP is the per-connection pool SNI
+	// (activeSNI), hiding the real routing SNI.
 	UseRawInjection bool
 	RawInjector     *forward.RawInjector
 	InterfaceIP     *string
-	RawFakeSNI      string
 }
 
 // Start runs the MITM relay server until ctx is cancelled.
@@ -180,7 +180,9 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 	var rawLocalPort int
 	rawActive := opts.UseRawInjection && opts.RawInjector != nil && *opts.RawInjector != nil
 	if rawActive {
-		decoy := opts.RawFakeSNI
+		// Decoy SNI shown to the ISP: the per-connection pool SNI (activeSNI)
+		// so the censor sees a rotating fake SNI; falls back to FAKE_SNI.
+		decoy := activeSNI
 		if decoy == "" {
 			decoy = opts.FakeSNI
 		}
