@@ -123,7 +123,7 @@ func marshalJSON(v interface{}) ([]byte, error) {
 func showPlatformInfo() {
 	fmt.Printf("\nPlatform: %s %s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("Version:  %s\n", version)
-	fmt.Printf("Raw injection (Linux seq_id trick): %v\n", forward.IsRawAvailable())
+	fmt.Printf("Raw injection (fake-SNI, seq_id trick):   %v\n", forward.IsRawAvailable())
 	fmt.Printf("Recommended: combined (fragment + raw fake-SNI when root)\n")
 }
 

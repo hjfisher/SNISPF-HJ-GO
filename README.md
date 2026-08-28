@@ -487,10 +487,26 @@ Outputs which domains are Cloudflare-backed — useful for building `FAKE_SNIS`.
 |---|---|---|
 | Linux | Full | Raw injection with `sudo` / `CAP_NET_RAW` |
 | macOS | Full | Fragmentation + fake-SNI; no raw sockets |
-| Windows 10/11 | Full | Fragment/combined; no raw sockets |
+| Windows 10/11 | Full | Fragment/combined; **fake-SNI raw injection via WinDivert** (admin + `WinDivert.dll` installed); falls back to fragmentation otherwise |
 | Android (Termux) | Supported | No root needed; fragmentation + fake-SNI |
 
 Run `snispf.exe --info` to see what your system supports.
+
+### Windows raw fake-SNI (WinDivert)
+
+On Windows, `fake_sni`/`combined` can do the same raw out-of-window fake-SNI
+injection as Linux (the seq_id trick) using the **WinDivert** driver:
+
+1. Install the **WinDivert** driver — download `WinDivert.dll`,
+   `WinDivert32.sys` and `WinDivert64.sys` from the
+   [WinDivert releases](https://github.com/basil00/WinDivert/releases) and place
+   them next to `snispf-hj-go.exe` (or on `PATH`).
+2. Run `snispf-hj-go.exe` **as Administrator** (required to open the WinDivert
+   handle).
+
+If WinDivert is missing or you run non-elevated, the app logs
+`WinDivert: cannot load WinDivert.dll` and **automatically falls back to
+fragmentation**, so connections still work — just without the decoy SNI.
 
 ---
 

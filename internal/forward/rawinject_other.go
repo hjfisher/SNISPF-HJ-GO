@@ -1,20 +1,20 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package forward
 
 import "syscall"
 
-// NewRawInjector returns nil on platforms without AF_PACKET.
+// NewRawInjector returns nil on platforms without AF_PACKET or WinDivert.
 func NewRawInjector(localIP, remoteIP string, remotePort int) RawInjector {
 	return nil
 }
 
-// rawDialControlImpl is a no-op off-Linux.
+// rawDialControlImpl is a no-op off-Linux/off-Windows.
 func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
 	return nil
 }
 
-// isRawAvailable always reports false without AF_PACKET.
+// isRawAvailable always reports false without AF_PACKET/WinDivert.
 func isRawAvailable() bool {
 	return false
 }

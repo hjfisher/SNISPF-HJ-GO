@@ -28,8 +28,6 @@ const (
 	tcpACK = 0x10
 )
 
-func htons(v uint16) uint16 { return v<<8 | v>>8 }
-
 // portState tracks a single outgoing connection for the sniffer.
 type portState struct {
 	mu        sync.Mutex
@@ -330,40 +328,6 @@ func (r *rawInjector) injectFrame(frame []byte) bool {
 		return false
 	}
 	return true
-}
-
-func sum16(data []byte) uint32 {
-	var s uint32
-	for i := 0; i+1 < len(data); i += 2 {
-		s += uint32(binary.BigEndian.Uint16(data[i:]))
-	}
-	if len(data)%2 == 1 {
-		s += uint32(data[len(data)-1]) << 8
-	}
-	for s>>16 != 0 {
-		s = (s & 0xFFFF) + (s >> 16)
-	}
-	return s
-}
-
-func checksumFold(s uint32) uint16 {
-	for s>>16 != 0 {
-		s = (s & 0xFFFF) + (s >> 16)
-	}
-	return ^uint16(s)
-}
-
-func ipChecksum(iph []byte) uint16 {
-	return checksumFold(sum16(iph))
-}
-
-func tcpChecksum(iph, tcpWithPayload []byte) uint16 {
-	pseudo := make([]byte, 12)
-	copy(pseudo[0:4], iph[12:16])
-	copy(pseudo[4:8], iph[16:20])
-	pseudo[9] = 6
-	binary.BigEndian.PutUint16(pseudo[10:], uint16(len(tcpWithPayload)))
-	return checksumFold(sum16(pseudo) + sum16(tcpWithPayload))
 }
 
 // rawDialControlImpl registers the outgoing socket's local port with the
