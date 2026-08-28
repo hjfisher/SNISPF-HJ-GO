@@ -2,9 +2,9 @@ version: 2
 project_name: snispf-hj-go
 before:
   hooks:
-    - curl -sSL https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -o /tmp/windivert.zip
-    - rm -rf windivert && mkdir -p windivert && unzip -o /tmp/windivert.zip -d /tmp/wd_extract >/dev/null
-    - cp /tmp/wd_extract/WinDivert-2.2.2-A/x64/WinDivert.dll windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/x86/WinDivert64.sys windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/x86/WinDivert32.sys windivert/ && true
+    - curl -sSL -o /tmp/windivert.zip https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip && ls -l /tmp/windivert.zip
+    - rm -rf windivert /tmp/wd_extract && mkdir -p windivert /tmp/wd_extract && (command -v unzip >/dev/null && unzip -o /tmp/windivert.zip -d /tmp/wd_extract || python3 -c "import zipfile; zipfile.ZipFile('/tmp/windivert.zip').extractall('/tmp/wd_extract')") && echo '--- extracted tree ---' && find /tmp/wd_extract -maxdepth 2 -type d
+    - find /tmp/wd_extract -name 'WinDivert.dll' -path '*x64*' -exec cp {} windivert/ \; ; find /tmp/wd_extract -name 'WinDivert64.sys' -exec cp {} windivert/ \; ; find /tmp/wd_extract -name 'WinDivert32.sys' -exec cp {} windivert/ \; ; echo '--- windivert bundle ---' && ls -la windivert/
 builds:
   - id: unix
     main: ./main.go
