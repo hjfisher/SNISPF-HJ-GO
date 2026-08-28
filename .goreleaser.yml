@@ -2,9 +2,9 @@ version: 2
 project_name: snispf-hj-go
 before:
   hooks:
-    - cmd: curl -sSL https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -o /tmp/windivert.zip
-    - cmd: rm -rf windivert && mkdir -p windivert && unzip -o /tmp/windivert.zip -d /tmp/wd_extract >/dev/null
-    - cmd: cp /tmp/wd_extract/WinDivert-2.2.2-A/x86_64/* windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert64.sys windivert/ 2>/dev/null; cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert32.sys windivert/ 2>/dev/null; true
+    - curl -sSL https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -o /tmp/windivert.zip
+    - rm -rf windivert && mkdir -p windivert && unzip -o /tmp/windivert.zip -d /tmp/wd_extract >/dev/null
+    - cp /tmp/wd_extract/WinDivert-2.2.2-A/x86_64/* windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert64.sys windivert/ 2>/dev/null; cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert32.sys windivert/ 2>/dev/null; true
 builds:
   - id: unix
     main: ./main.go
