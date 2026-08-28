@@ -2,17 +2,7 @@ version: 2
 project_name: snispf-hj-go
 before:
   hooks:
-    - |
-      set -e
-      curl -sSL -o .windivert_dl.zip https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip
-      rm -rf windivert .windivert_dl
-      mkdir -p windivert .windivert_dl
-      ( command -v unzip >/dev/null && unzip -o .windivert_dl.zip -d .windivert_dl || python3 -c "import zipfile; zipfile.ZipFile('.windivert_dl.zip').extractall('.windivert_dl')" )
-      find .windivert_dl -name 'WinDivert.dll' -path '*x64*' -exec cp {} windivert/ \;
-      find .windivert_dl -name 'WinDivert64.sys' -exec cp {} windivert/ \;
-      find .windivert_dl -name 'WinDivert32.sys' -exec cp {} windivert/ \;
-      echo '--- windivert bundle ---'
-      ls -la windivert/
+    - ./scripts/fetch_windivert.sh
 builds:
   - id: unix
     main: ./main.go
@@ -49,7 +39,8 @@ archives:
   - id: unix
     ids:
       - unix
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
@@ -57,7 +48,8 @@ archives:
   - id: windows
     ids:
       - windows
-    format: zip
+    formats:
+      - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
