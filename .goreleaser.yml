@@ -1,9 +1,14 @@
 project_name: snispf-hj-go
+before:
+  hooks:
+    - cmd: curl -sSL https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -o /tmp/windivert.zip
+    - cmd: rm -rf windivert && mkdir -p windivert && unzip -o /tmp/windivert.zip -d /tmp/wd_extract >/dev/null
+    - cmd: cp /tmp/wd_extract/WinDivert-2.2.2-A/x86_64/* windivert/ && cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert64.sys windivert/ 2>/dev/null; cp /tmp/wd_extract/WinDivert-2.2.2-A/WinDivert32.sys windivert/ 2>/dev/null; true
 builds:
-  - main: ./main.go
+  - id: unix
+    main: ./main.go
     binary: snispf-hj-go
     goos:
-      - windows
       - linux
       - darwin
     goarch:
@@ -16,15 +21,39 @@ builds:
       - -X main.version={{.Version}}
     flags:
       - -trimpath
+  - id: windows
+    main: ./main.go
+    binary: snispf-hj-go
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    flags:
+      - -trimpath
 archives:
-  - format: tar.gz
+  - id: unix
+    ids:
+      - unix
+    format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
-      - goos: windows
-        format: zip
     files:
       - README.md
       - config.json
+  - id: windows
+    ids:
+      - windows
+    format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - config.json
+      - windivert/*
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
@@ -44,27 +73,30 @@ release:
   name_template: "SNISPF-HJ-GO v{{ .Version }}"
   header: |
     # SNISPF-HJ-GO v{{ .Version }}
-    
+
     Cross-Platform DPI Bypass Tool with MITM Support
-    
+
     ## Platforms
-    - Windows (amd64, arm64)
+    - Windows (amd64, arm64) — includes WinDivert.dll + driver for raw fake-SNI injection
     - Linux (amd64, arm64)
     - macOS (amd64, arm64)
-    
+
     ## Features
     - MITM TLS decryption/repacking with uTLS fingerprinting
     - Fragmentation bypass (sni_split, half, multi, tls_record_frag)
-    - Fake SNI injection with raw sockets
+    - Fake SNI injection (raw sockets on Linux; **WinDivert on Windows — run as Administrator**)
     - Dynamic IP/SNI discovery
     - Connection pooling with health checks
     - FinalMask TCP fragmentation
   footer: |
     ---
+    **Windows users:** Run `snispf-hj-go.exe` as Administrator so WinDivert can load its driver.
+    If WinDivert is missing, the app automatically falls back to fragmentation-only.
+
     **SHA256 checksums:** [{{ .ProjectName }}_{{ .Version }}_checksums.txt]({{ .ProjectName }}_{{ .Version }}_checksums.txt)
-    
+
     **Installation:** Download the archive for your platform, extract, and run.
-    
+
     **Configuration:** See [config.json](config.json) for all options. Generate with `snispf-hj-go --generate-config config.json`
-    
+
     **MITM Mode:** Use `--method mitm` and pin the printed certificate SHA-256 in your client.
