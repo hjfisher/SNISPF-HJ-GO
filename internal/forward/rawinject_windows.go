@@ -416,15 +416,45 @@ func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address
 
 // isRawAvailable reports whether the WinDivert driver can be opened.
 func isRawAvailable() bool {
-	inj := NewRawInjector("127.0.0.1", "127.0.0.1", 443)
-	if inj == nil {
-		return false
+	return checkWinDivert() == ""
+}
+
+// RawStatus returns a human-readable diagnostic describing why raw fake-SNI
+// injection is or isn't available on this platform. Empty string means it works.
+func RawStatus() string {
+	return checkWinDivert()
+}
+
+func checkWinDivert() string {
+	// Load the DLL before touching procs (a missing DLL would otherwise panic).
+	if err := winDivertDLL.Load(); err != nil {
+		return "WinDivert.dll not found (place WinDivert.dll, WinDivert32.sys and WinDivert64.sys next to the exe, then re-run as Administrator)"
 	}
-	if !inj.Start() {
-		return false
+	if err := procWinDivertOpen.Find(); err != nil {
+		return "WinDivert.dll present but WinDivertOpen export missing: " + err.Error()
 	}
-	inj.Stop()
-	return true
+
+	filterPtr, err := syscall.BytePtrFromString("outbound && ip && tcp && tcp.DstPort == 443")
+	if err != nil {
+		return "bad probe filter: " + err.Error()
+	}
+	handle, _, callErr := procWinDivertOpen.Call(
+		uintptr(unsafe.Pointer(filterPtr)),
+		uintptr(winDivertLayerNetwork),
+		uintptr(0),
+		uintptr(winDivertFlagSniff),
+	)
+	h := syscall.Handle(handle)
+	if h == syscall.InvalidHandle || h == 0 {
+		code := uint32(0)
+		if e, ok := callErr.(syscall.Errno); ok {
+			code = uint32(e)
+		}
+		return "WinDivertOpen failed (error " + strconv.Itoa(int(code)) +
+			"). Causes: not running as Administrator, or the WinDivert kernel driver is not installed / is blocked by Secure Boot or security software. Install the signed WinDivert drivers and run elevated."
+	}
+	_, _, _ = procWinDivertClose.Call(uintptr(h))
+	return ""
 }
 
 // IsRawAvailable reports whether WinDivert-based raw injection is supported.

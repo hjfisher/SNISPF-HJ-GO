@@ -123,7 +123,7 @@ func marshalJSON(v interface{}) ([]byte, error) {
 func showPlatformInfo() {
 	fmt.Printf("\nPlatform: %s %s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("Version:  %s\n", version)
-	fmt.Printf("Raw injection (fake-SNI, seq_id trick):   %v\n", forward.IsRawAvailable())
+	fmt.Printf("Raw injection (fake-SNI, seq_id trick):\n    %s\n", forward.RawStatus())
 	fmt.Printf("Recommended: combined (fragment + raw fake-SNI when root)\n")
 }
 
@@ -455,6 +455,32 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		}
 	}
 
+	// Raw injection on the MITM upstream (fake-SNI seq_id trick). Requires a
+	// raw backend and an admin/root context; otherwise silently stays off.
+	useMITMRaw := cfg.GetBool("MITM_RAW_INJECTION", false)
+	connectIP := cfg.GetString("CONNECT_IP", "104.18.38.202")
+	mitmInterfaceIP := utils.GetDefaultInterfaceIPv4(connectIP)
+	var mitmRaw forward.RawInjector
+	var mitmRawPtr *forward.RawInjector
+	if useMITMRaw {
+		inj := forward.NewRawInjector(mitmInterfaceIP, connectIP, cfg.GetInt("CONNECT_PORT", 443))
+		if inj != nil && inj.Start() {
+			mitmRaw = inj
+			mitmRawPtr = &mitmRaw
+			log.Printf("MITM upstream raw injection: ACTIVE (decoy fake-SNI on seq_id trick)")
+		} else {
+			if inj != nil {
+				inj.Stop()
+			}
+			log.Printf("MITM raw injection requested but backend unavailable (need admin/root + WinDivert or AF_PACKET). Disabling.")
+		}
+	}
+	defer func() {
+		if mitmRawPtr != nil && *mitmRawPtr != nil {
+			(*mitmRawPtr).Stop()
+		}
+	}()
+
 	opts := &mitm.Options{
 		ListenHost:   cfg.GetString("LISTEN_HOST", "0.0.0.0"),
 		ListenPort:   cfg.GetInt("LISTEN_PORT", 40443),
@@ -469,6 +495,10 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		UseClientSNI: useClientSNI,
 		ConnManager:  connManager,
 		Fingerprint:  fingerprintVal,
+		UseRawInjection: useMITMRaw,
+		RawInjector:     mitmRawPtr,
+		InterfaceIP:     &mitmInterfaceIP,
+		RawFakeSNI:      cfg.GetString("MITM_RAW_FAKE_SNI", ""),
 	}
 	if err := mitm.Start(ctx, opts); err != nil {
 		fmt.Printf("\nError: %v\n", err)

@@ -13,6 +13,7 @@ import (
 	utls "github.com/refraction-networking/utls"
 
 	"snispf-hj-go/internal/finalmask"
+	"snispf-hj-go/internal/forward"
 	"snispf-hj-go/internal/pool"
 	"snispf-hj-go/internal/tlsutil"
 )
@@ -40,6 +41,14 @@ type Options struct {
 	ConnManager    *pool.ConnectionManager
 	Fingerprint    string
 	FingerprintBin string
+	// Raw injection on the upstream connection (seq_id trick). When enabled
+	// and a raw backend is available, the MITM upstream dial is registered
+	// with the raw injector so an out-of-window fake-SNI hello (RawFakeSNI,
+	// defaulting to FakeSNI) is injected, hiding the real routing SNI.
+	UseRawInjection bool
+	RawInjector     *forward.RawInjector
+	InterfaceIP     *string
+	RawFakeSNI      string
 }
 
 // Start runs the MITM relay server until ctx is cancelled.
@@ -166,13 +175,42 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 		serverName = clientSNI
 	}
 
-	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites)
+	// ── Upstream dial: optionally register with the raw injector ────────
+	var dialer *net.Dialer
+	var rawLocalPort int
+	rawActive := opts.UseRawInjection && opts.RawInjector != nil && *opts.RawInjector != nil
+	if rawActive {
+		decoy := opts.RawFakeSNI
+		if decoy == "" {
+			decoy = opts.FakeSNI
+		}
+		fakeHello := tlsutil.BuildClientHelloRecord(decoy, opts.CipherSuites)
+		dialer = &net.Dialer{Timeout: dialTimeout, Control: forward.DialControl(*opts.RawInjector, fakeHello)}
+		if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
+			dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
+		}
+		log.Printf("[%s] MITM upstream raw injection ACTIVE (decoy SNI=%s, real SNI=%s)", peer, decoy, serverName)
+	}
+
+	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, dialer)
 	if err != nil {
 		log.Printf("[%s] upstream connect %s:%d failed: %v", peer, activeIP, opts.ConnectPort, err)
 		releasePair(true)
 		_ = tconn.Close()
 		return
 	}
+	if rawActive {
+		if tcp, ok := up.(*net.TCPConn); ok {
+			if la, ok := tcp.LocalAddr().(*net.TCPAddr); ok {
+				rawLocalPort = la.Port
+			}
+		}
+	}
+	defer func() {
+		if rawActive && rawLocalPort > 0 {
+			(*opts.RawInjector).CleanupPort(rawLocalPort)
+		}
+	}()
 	defer up.Close()
 
 	loss := ""
@@ -289,8 +327,11 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 // openUpstream connects to the real upstream and completes TLS. With a
 // fingerprint profile the handshake is driven in-process by uTLS (a
 // byte-perfect browser ClientHello); otherwise Go's crypto/tls builds it.
-func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16) (net.Conn, error) {
-	raw, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(activeIP, strconv.Itoa(connectPort)))
+func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16, dialer *net.Dialer) (net.Conn, error) {
+	if dialer == nil {
+		dialer = &net.Dialer{Timeout: dialTimeout}
+	}
+	raw, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(activeIP, strconv.Itoa(connectPort)))
 	if err != nil {
 		return nil, err
 	}

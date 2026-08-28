@@ -19,6 +19,11 @@ func isRawAvailable() bool {
 	return false
 }
 
+// RawStatus returns a human-readable diagnostic for raw injection.
+func RawStatus() string {
+	return "unavailable: no raw-packet backend for this platform (use Linux or Windows)"
+}
+
 // IsRawAvailable reports whether raw packet injection is supported.
 func IsRawAvailable() bool {
 	return isRawAvailable()

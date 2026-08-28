@@ -35,6 +35,8 @@ func DefaultConfig() *Config {
 		"MITM_CERT_CN":           "SNISPF-HJ",
 		"MITM_ALPN":              []interface{}{"h2", "http/1.1"},
 		"MITM_USE_CLIENT_SNI":    false,
+		"MITM_RAW_INJECTION":     false,
+		"MITM_RAW_FAKE_SNI":      nil,
 		"FINGERPRINT":            nil,
 		"FINGERPRINT_TLS_BIN":    nil,
 		"FAKE_SNI_FRAGMENT_REAL": true,

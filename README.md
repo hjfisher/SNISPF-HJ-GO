@@ -356,6 +356,8 @@ SNI pool) remains available for edge cases where the CDN ignores SNI mismatch.
 | `MITM_CERT_CN` | `"SNISPF-HJ"` | Common Name for the generated certificate |
 | `MITM_ALPN` | `["h2", "http/1.1"]` | ALPN offered upstream when the client sends no ALPN |
 | `MITM_USE_CLIENT_SNI` | `true` | Use the client's real SNI upstream (CF routes correctly); `FINALMASK_TCP` fragments it on the wire |
+| `MITM_RAW_INJECTION` | `false` | Also run the raw fake-SNI **seq_id injection** on the MITM upstream dial (requires admin/root + WinDivert or AF_PACKET). Injects an out-of-window decoy-SNI hello to hide the real routing SNI from DPI; real SNI still sent in the uTLS hello |
+| `MITM_RAW_FAKE_SNI` | `null` | Decoy SNI for the raw-injected hello in MITM mode; defaults to `FAKE_SNI` when unset |
 | `FINGERPRINT` | `null` | Browser TLS fingerprint: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`, `randomizednoalpn`, `unsafe`, or pinned versions |
 
 | Key | Default | Description |
@@ -495,7 +497,9 @@ Run `snispf.exe --info` to see what your system supports.
 ### Windows raw fake-SNI (WinDivert)
 
 On Windows, `fake_sni`/`combined` can do the same raw out-of-window fake-SNI
-injection as Linux (the seq_id trick) using the **WinDivert** driver:
+injection as Linux (the seq_id trick) using the **WinDivert** driver. The same
+backend also powers **MITM upstream raw injection** when
+`MITM_RAW_INJECTION=true` (see the MITM section).
 
 1. Install the **WinDivert** driver — download `WinDivert.dll`,
    `WinDivert32.sys` and `WinDivert64.sys` from the

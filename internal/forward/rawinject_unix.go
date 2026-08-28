@@ -361,6 +361,14 @@ func isRawAvailable() bool {
 	return true
 }
 
+// RawStatus returns a human-readable diagnostic for raw injection.
+func RawStatus() string {
+	if isRawAvailable() {
+		return "available (AF_PACKET raw sockets)"
+	}
+	return "unavailable: AF_PACKET raw sockets require root / CAP_NET_RAW"
+}
+
 // IsRawAvailable reports whether raw packet injection is supported.
 func IsRawAvailable() bool {
 	return isRawAvailable()

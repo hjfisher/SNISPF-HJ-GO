@@ -1,6 +1,21 @@
 package forward
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"syscall"
+)
+
+// DialControl returns a net.Dialer.Control func that registers the local
+// socket port with the raw injector (before the SYN is sent) so the
+// out-of-window fake-SNI hello is injected during the handshake. It is safe
+// to call on any platform: it returns nil where raw injection is unsupported.
+// The concrete injector is detected internally, so RawInjector may be nil.
+func DialControl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
+	if inj == nil {
+		return nil
+	}
+	return rawDialControl(inj, fakeHello)
+}
 
 // htons converts a 16-bit value from host to network byte order.
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
