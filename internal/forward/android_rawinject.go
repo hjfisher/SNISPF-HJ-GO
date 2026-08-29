@@ -11,7 +11,9 @@ import (
 	"log"
 	"net"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -340,4 +342,37 @@ func checksumFoldAndroid(s uint32) uint16 {
 		s = (s & 0xFFFF) + (s >> 16)
 	}
 	return ^uint16(s)
+}
+
+// rawDialControlImpl registers the outgoing socket's local port with the
+// Android raw injector.
+func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
+	r, ok := inj.(*androidRawInjector)
+	if !ok {
+		return nil
+	}
+	return func(network, address string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) {
+			var sa syscall.RawSockaddrInet4
+			size := uint32(unsafe.Sizeof(sa))
+			_, _, errno := syscall.Syscall(syscall.SYS_GETSOCKNAME, fd, uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&size)))
+			if errno != 0 {
+				return
+			}
+			port := int(sa.Port>>8) | int(sa.Port&0xff)<<8
+			r.RegisterPort(port, fakeHello)
+		})
+	}
+}
+
+func isRawAvailable() bool {
+	return true // setsocknetwork may grant CAP_NET_RAW
+}
+
+func RawStatus() string {
+	return "available (android.system.Os.setsocknetwork)"
+}
+
+func IsRawAvailable() bool {
+	return isRawAvailable()
 }
