@@ -200,6 +200,7 @@ func main() {
 		fragmentStrategy string
 		fragmentDelay    float64
 		noRaw            bool
+		homeDir          string
 		checkDomains     string
 		checkWorkers     int
 		checkTimeout     float64
@@ -228,6 +229,7 @@ func main() {
 	flag.StringVar(&fragmentStrategy, "fragment-strategy", "", "Fragment strategy: sni_split|half|multi|tls_record_frag")
 	flag.Float64Var(&fragmentDelay, "fragment-delay", -1, "Delay between fragments in seconds")
 	flag.BoolVar(&noRaw, "no-raw", false, "Disable raw socket injection even if available")
+	flag.StringVar(&homeDir, "home", "", "Override HOME/cert-cache directory (writable; e.g. app files dir)")
 	flag.StringVar(&checkDomains, "check-domains", "", "Check domains from a file to find Cloudflare-backed ones")
 	flag.IntVar(&checkWorkers, "check-workers", 50, "Parallel workers for domain checking")
 	flag.Float64Var(&checkTimeout, "check-timeout", 3.0, "Per-domain timeout for checking")
@@ -244,6 +246,20 @@ func main() {
 	if *showVersion {
 		fmt.Printf("SNISPF %s\n", version)
 		return
+	}
+
+	// --home overrides the writable HOME/cert-cache dir. su and other wrappers
+	// often sanitize HOME to a root user's (possibly read-only) location, so the
+	// app passes an app-private files dir here to guarantee the MITM cert cache
+	// (os.UserHomeDir()/.snispf) can be created.
+	if homeDir != "" {
+		if err := os.MkdirAll(homeDir, 0o700); err != nil {
+			fmt.Printf("Error: cannot create --home dir %s: %v\n", homeDir, err)
+			os.Exit(1)
+		}
+		_ = os.Setenv("HOME", homeDir)
+		_ = os.Setenv("USERPROFILE", homeDir)
+		log.Printf("HOME override: %s", homeDir)
 	}
 
 	if genConfig != "" {
