@@ -1,5 +1,4 @@
 //go:build android
-// +build android
 
 // android_rawinject.go - Android-specific raw injector implementation.
 // Uses android.system.Os.setsocknetwork via JNI to lift AF_PACKET restrictions
@@ -11,8 +10,8 @@ import (
 	"encoding/binary"
 	"log"
 	"net"
+	"sync"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
