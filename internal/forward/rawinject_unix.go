@@ -1,5 +1,4 @@
 //go:build linux
-//go:build android
 
 package forward
 
