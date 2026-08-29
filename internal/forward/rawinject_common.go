@@ -2,8 +2,43 @@ package forward
 
 import (
 	"encoding/binary"
+	"sync"
 	"syscall"
+	"time"
 )
+
+// Shared constants for raw injection across platforms
+const (
+	ethPIP  = 0x0800
+	ethPAll = 0x0003
+)
+
+// TCP flags
+const (
+	tcpFIN = 0x01
+	tcpSYN = 0x02
+	tcpRST = 0x04
+	tcpPSH = 0x08
+	tcpACK = 0x10
+)
+
+// portState tracks a single outgoing connection for the sniffer.
+type portState struct {
+	mu        sync.Mutex
+	synSeq    uint32
+	fakeHello []byte
+	fakeSent  bool
+	confirmed chan struct{}
+}
+
+// RawInjector is the interface for raw packet injection.
+type RawInjector interface {
+	Start() bool
+	Stop()
+	RegisterPort(localPort int, fakeHello []byte)
+	CleanupPort(localPort int)
+	WaitForConfirmation(localPort int, timeout time.Duration) bool
+}
 
 // DialControl returns a net.Dialer.Control func that registers the local
 // socket port with the raw injector (before the SYN is sent) so the

@@ -1,4 +1,4 @@
-//go:build linux || android
+//go:build linux
 
 package forward
 
@@ -6,36 +6,11 @@ import (
 	"encoding/binary"
 	"log"
 	"net"
-	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
-
-const (
-	ethPIP  = 0x0800
-	ethPAll = 0x0003
-)
-
-// TCP flags
-const (
-	tcpFIN = 0x01
-	tcpSYN = 0x02
-	tcpRST = 0x04
-	tcpPSH = 0x08
-	tcpACK = 0x10
-)
-
-// portState tracks a single outgoing connection for the sniffer.
-type portState struct {
-	mu        sync.Mutex
-	synSeq    uint32
-	fakeHello []byte
-	fakeSent  bool
-	confirmed chan struct{}
-}
 
 // rawInjector sniffs the outbound TCP handshake and injects the fake
 // ClientHello with an out-of-window seq (the seq_id trick). Linux-only.
@@ -52,7 +27,7 @@ type rawInjector struct {
 	ports   map[int]*portState
 }
 
-// NewRawInjector builds the Linux raw injector (nil elsewhere).
+// NewRawInjector builds the Linux raw injector.
 func NewRawInjector(localIP, remoteIP string, remotePort int) RawInjector {
 	r := &rawInjector{
 		remotePort: remotePort,

@@ -59,15 +59,6 @@ func (a *winDivertAddress) setSubIfIdx(v uint32) {
 	binary.LittleEndian.PutUint32(a[wdOffSubIfIdx:], v)
 }
 
-// portState tracks a single outgoing connection for the sniffer.
-type portState struct {
-	mu        sync.Mutex
-	synSeq    uint32
-	fakeHello []byte
-	fakeSent  bool
-	confirmed chan struct{}
-}
-
 // windowsRawInjector sniffs the outbound TCP handshake and injects the fake
 // ClientHello with an out-of-window seq (the seq_id trick) using WinDivert.
 type windowsRawInjector struct {

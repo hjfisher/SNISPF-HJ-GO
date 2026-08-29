@@ -8,15 +8,6 @@ import (
 	"snispf-hj-go/internal/tlsutil"
 )
 
-// RawInjector is the interface the bypass strategies need from the Linux raw
-// packet injector (waiting for the server to confirm it ignored the fake).
-type RawInjector interface {
-	WaitForConfirmation(localPort int, timeout time.Duration) bool
-	CleanupPort(localPort int)
-	Start() bool
-	Stop()
-}
-
 // BypassStrategy applies a DPI bypass technique to an outgoing connection.
 type BypassStrategy interface {
 	Name() string

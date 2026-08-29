@@ -11,36 +11,11 @@ import (
 	"encoding/binary"
 	"log"
 	"net"
-	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
-
-const (
-	ethPIP  = 0x0800
-	ethPAll = 0x0003
-)
-
-// TCP flags
-const (
-	tcpFIN = 0x01
-	tcpSYN = 0x02
-	tcpRST = 0x04
-	tcpPSH = 0x08
-	tcpACK = 0x10
-)
-
-// portState tracks a single outgoing connection for the sniffer.
-type portState struct {
-	mu        sync.Mutex
-	synSeq    uint32
-	fakeHello []byte
-	fakeSent  bool
-	confirmed chan struct{}
-}
 
 // androidRawInjector is the Android implementation of RawInjector.
 // On Android, AF_PACKET sockets are blocked by the kernel for user-space
