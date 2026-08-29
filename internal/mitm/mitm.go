@@ -256,7 +256,10 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 				break
 			}
 		}
-		done <- struct{}{}
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 	}()
 
 	// S->C
@@ -282,7 +285,10 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 				break
 			}
 		}
-		done <- struct{}{}
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 	}()
 
 	// Drain watcher
@@ -302,7 +308,10 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 				log.Printf("Drain timeout reached for %s / %s — closing MITM relay from %s", pair.IP, pair.SNI, peer)
 				_ = tconn.Close()
 				_ = up.Close()
-				done <- struct{}{}
+				select {
+				case done <- struct{}{}:
+				default:
+				}
 				return
 			case <-ticker.C:
 				select {
