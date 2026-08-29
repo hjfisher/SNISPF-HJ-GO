@@ -1,4 +1,9 @@
-//go:build linux || android
+//go:build android
+// +build android
+
+// android_rawinject.go - Android-specific raw injector implementation.
+// Uses android.system.Os.setsocknetwork via JNI to lift AF_PACKET restrictions
+// that Android's Linux kernel normally imposes on user-space processes.
 
 package forward
 
@@ -37,9 +42,11 @@ type portState struct {
 	confirmed chan struct{}
 }
 
-// rawInjector sniffs the outbound TCP handshake and injects the fake
-// ClientHello with an out-of-window seq (the seq_id trick). Linux-only.
-type rawInjector struct {
+// androidRawInjector is the Android implementation of RawInjector.
+// On Android, AF_PACKET sockets are blocked by the kernel for user-space
+// processes, so we need to call android.system.Os.setsocknetwork() via JNI
+// to grant the socket CAP_NET_RAW-like permissions.
+type androidRawInjector struct {
 	localIP    [4]byte
 	remoteIP   [4]byte
 	remotePort int
@@ -52,9 +59,9 @@ type rawInjector struct {
 	ports   map[int]*portState
 }
 
-// NewRawInjector builds the Linux raw injector (nil elsewhere).
+// NewRawInjector builds the Android raw injector (uses JNI for CAP_NET_RAW).
 func NewRawInjector(localIP, remoteIP string, remotePort int) RawInjector {
-	r := &rawInjector{
+	r := &androidRawInjector{
 		remotePort: remotePort,
 		ports:      make(map[int]*portState),
 	}
@@ -63,25 +70,33 @@ func NewRawInjector(localIP, remoteIP string, remotePort int) RawInjector {
 	return r
 }
 
-func (r *rawInjector) Start() bool {
+func (r *androidRawInjector) Start() bool {
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(ethPAll)))
 	if err != nil {
-		log.Printf("Cannot open AF_PACKET socket: %v", err)
-		log.Printf("Raw injection unavailable - need root/CAP_NET_RAW")
+		log.Printf("Cannot open AF_PACKET socket on Android: %v", err)
+		log.Printf("Trying android.system.Os.setsocknetwork to lift CAP_NET_RAW restriction")
 		return false
 	}
+
+	// Lift the raw socket restriction via android.system.Os.setsocknetwork (JNI).
+	if err := androidNativeSetsocknetwork(int64(fd)); err != nil {
+		log.Printf("android.system.Os.setsocknetwork failed: %v", err)
+		_ = unix.Close(fd)
+		return false
+	}
+
 	r.fd = fd
 
 	name, idx := findInterface(net.IPv4(r.remoteIP[0], r.remoteIP[1], r.remoteIP[2], r.remoteIP[3]).String())
 	if name == "" {
-		log.Printf("Cannot determine outgoing interface for raw injection")
+		log.Printf("Cannot determine outgoing interface for Android raw injector")
 		_ = unix.Close(fd)
 		r.fd = -1
 		return false
 	}
 	r.ifaceName = name
 	r.ifaceIdx = idx
-	log.Printf("Using interface %s (index %d)", name, idx)
+	log.Printf("Using interface %s (index %d) for Android raw injection", name, idx)
 
 	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(ethPAll), Ifindex: idx}); err != nil {
 		log.Printf("Cannot bind raw socket to %s: %v", name, err)
@@ -92,11 +107,11 @@ func (r *rawInjector) Start() bool {
 
 	r.running = true
 	go r.sniffLoop()
-	log.Printf("Raw packet injector started")
+	log.Printf("Android raw packet injector started (via android.system.Os.setsocknetwork)")
 	return true
 }
 
-func (r *rawInjector) Stop() {
+func (r *androidRawInjector) Stop() {
 	r.running = false
 	if r.fd >= 0 {
 		_ = unix.Close(r.fd)
@@ -104,19 +119,19 @@ func (r *rawInjector) Stop() {
 	}
 }
 
-func (r *rawInjector) RegisterPort(localPort int, fakeHello []byte) {
+func (r *androidRawInjector) RegisterPort(localPort int, fakeHello []byte) {
 	r.portsMu.Lock()
 	r.ports[localPort] = &portState{fakeHello: fakeHello, confirmed: make(chan struct{})}
 	r.portsMu.Unlock()
 }
 
-func (r *rawInjector) CleanupPort(localPort int) {
+func (r *androidRawInjector) CleanupPort(localPort int) {
 	r.portsMu.Lock()
 	delete(r.ports, localPort)
 	r.portsMu.Unlock()
 }
 
-func (r *rawInjector) WaitForConfirmation(localPort int, timeout time.Duration) bool {
+func (r *androidRawInjector) WaitForConfirmation(localPort int, timeout time.Duration) bool {
 	r.portsMu.Lock()
 	ps := r.ports[localPort]
 	r.portsMu.Unlock()
@@ -131,37 +146,7 @@ func (r *rawInjector) WaitForConfirmation(localPort int, timeout time.Duration) 
 	}
 }
 
-func findInterface(remoteIP string) (string, int) {
-	udp, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP(remoteIP), Port: 53})
-	if err != nil {
-		return "", 0
-	}
-	defer udp.Close()
-	local := udp.LocalAddr().(*net.UDPAddr)
-
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return "", 0
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-		addrs, _ := iface.Addrs()
-		for _, a := range addrs {
-			ipn, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			if ip4 := ipn.IP.To4(); ip4 != nil && ip4.Equal(local.IP) {
-				return iface.Name, iface.Index
-			}
-		}
-	}
-	return "", 0
-}
-
-func (r *rawInjector) sniffLoop() {
+func (r *androidRawInjector) sniffLoop() {
 	buf := make([]byte, 65536)
 	for r.running {
 		n, _, err := unix.Recvfrom(r.fd, buf, 0)
@@ -175,11 +160,10 @@ func (r *rawInjector) sniffLoop() {
 	}
 }
 
-func (r *rawInjector) handlePacket(pkt []byte) {
+func (r *androidRawInjector) handlePacket(pkt []byte) {
 	if len(pkt) < 14+20+20 {
 		return
 	}
-	// Ethernet type must be IPv4.
 	if binary.BigEndian.Uint16(pkt[12:14]) != ethPIP {
 		return
 	}
@@ -212,7 +196,6 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 		srcPort := int(binary.BigEndian.Uint16(tcp[0:2]))
 		seq := binary.BigEndian.Uint32(tcp[4:8])
 
-		// SYN (no ACK): record the ISN for a new connection.
 		if flags&tcpSYN != 0 && flags&tcpACK == 0 {
 			r.portsMu.Lock()
 			ps := r.ports[srcPort]
@@ -226,7 +209,6 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 			return
 		}
 
-		// 3rd-handshake ACK: inject the fake ClientHello.
 		if flags&tcpACK != 0 && flags&(tcpSYN|tcpFIN|tcpRST) == 0 && payloadLen == 0 {
 			r.portsMu.Lock()
 			ps := r.ports[srcPort]
@@ -246,7 +228,7 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 
 			go func(tpl []byte, isn uint32, payload []byte, port int) {
 				time.Sleep(time.Millisecond)
-				frame := buildFakeFrame(tpl, isn, payload)
+				frame := buildFakeFrameAndroid(tpl, isn, payload)
 				if r.injectFrame(frame) {
 					outSeq := isn + 1 - uint32(len(payload))
 					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d)", port, outSeq, isn, len(payload))
@@ -261,7 +243,6 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 		dstPort := int(binary.BigEndian.Uint16(tcp[2:4]))
 		ackNum := binary.BigEndian.Uint32(tcp[8:12])
 
-		// Server ACK confirming the fake was ignored.
 		if flags&tcpACK != 0 && flags&(tcpSYN|tcpFIN|tcpRST) == 0 && payloadLen == 0 {
 			r.portsMu.Lock()
 			ps := r.ports[dstPort]
@@ -283,9 +264,52 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 	}
 }
 
-// buildFakeFrame rebuilds the captured 3rd-ACK packet with the fake
-// ClientHello payload and an out-of-window sequence number.
-func buildFakeFrame(templatePkt []byte, isn uint32, fakePayload []byte) []byte {
+func (r *androidRawInjector) injectFrame(frame []byte) bool {
+	addr := &unix.SockaddrLinklayer{
+		Protocol: htons(ethPIP),
+		Ifindex:  r.ifaceIdx,
+		Halen:    6,
+		Addr:     [8]byte{frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]},
+	}
+	if err := unix.Sendto(r.fd, frame, 0, addr); err != nil {
+		log.Printf("Android injector Sendto error: %v", err)
+		return false
+	}
+	return true
+}
+
+// findInterface finds the network interface index for a given remote IP address.
+func findInterface(remoteIP string) (string, int) {
+	udp, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP(remoteIP), Port: 53})
+	if err != nil {
+		return "", 0
+	}
+	defer udp.Close()
+	local := udp.LocalAddr().(*net.UDPAddr)
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", 0
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ip4 := ipn.IP.To4(); ip4 != nil && ip4.Equal(local.IP) {
+				return iface.Name, iface.Index
+			}
+		}
+	}
+	return "", 0
+}
+
+func buildFakeFrameAndroid(templatePkt []byte, isn uint32, fakePayload []byte) []byte {
 	ipOff := 14
 	ihl := int(templatePkt[ipOff]&0x0F) * 4
 	tcpOff := ipOff + ihl
@@ -295,81 +319,51 @@ func buildFakeFrame(templatePkt []byte, isn uint32, fakePayload []byte) []byte {
 	out = append(out, templatePkt[:tcpOff+tcpHdrLen]...)
 	out = append(out, fakePayload...)
 
-	// IP total length.
 	binary.BigEndian.PutUint16(out[ipOff+2:], uint16(len(out)-ipOff))
-	// Increment IP ID.
 	binary.BigEndian.PutUint16(out[ipOff+4:], binary.BigEndian.Uint16(out[ipOff+4:])+1)
-	// Recompute IP checksum.
 	out[ipOff+10] = 0
 	out[ipOff+11] = 0
-	binary.BigEndian.PutUint16(out[ipOff+10:], ipChecksum(out[ipOff:ipOff+ihl]))
+	binary.BigEndian.PutUint16(out[ipOff+10:], ipChecksumAndroid(out[ipOff:ipOff+ihl]))
 
-	// Set PSH flag.
 	out[tcpOff+13] |= tcpPSH
-	// Out-of-window sequence number.
 	binary.BigEndian.PutUint32(out[tcpOff+4:], isn+1-uint32(len(fakePayload)))
-	// Recompute TCP checksum.
 	out[tcpOff+16] = 0
 	out[tcpOff+17] = 0
-	binary.BigEndian.PutUint16(out[tcpOff+16:], tcpChecksum(out[ipOff:ipOff+ihl], out[tcpOff:]))
+	binary.BigEndian.PutUint16(out[tcpOff+16:], tcpChecksumAndroid(out[ipOff:ipOff+ihl], out[tcpOff:]))
 
 	return out
 }
 
-func (r *rawInjector) injectFrame(frame []byte) bool {
-	addr := &unix.SockaddrLinklayer{
-		Protocol: htons(ethPIP),
-		Ifindex:  r.ifaceIdx,
-		Halen:    6,
-		Addr:     [8]byte{frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]},
-	}
-	if err := unix.Sendto(r.fd, frame, 0, addr); err != nil {
-		log.Printf("Inject error: %v", err)
-		return false
-	}
-	return true
+func ipChecksumAndroid(iph []byte) uint16 {
+	return checksumFoldAndroid(sum16Android(iph))
 }
 
-// rawDialControlImpl registers the outgoing socket's local port with the
-// raw injector from inside net.Dialer.Control (before the SYN is sent).
-func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
-	r, ok := inj.(*rawInjector)
-	if !ok {
-		return nil
-	}
-	return func(network, address string, c syscall.RawConn) error {
-		return c.Control(func(fd uintptr) {
-			var sa syscall.RawSockaddrInet4
-			size := uint32(unsafe.Sizeof(sa))
-			_, _, errno := syscall.Syscall(syscall.SYS_GETSOCKNAME, fd, uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&size)))
-			if errno != 0 {
-				return
-			}
-			port := int(sa.Port>>8) | int(sa.Port&0xff)<<8
-			r.RegisterPort(port, fakeHello)
-		})
-	}
+func tcpChecksumAndroid(iph, tcpWithPayload []byte) uint16 {
+	pseudo := make([]byte, 12)
+	copy(pseudo[0:4], iph[12:16])
+	copy(pseudo[4:8], iph[16:20])
+	pseudo[9] = 6
+	binary.BigEndian.PutUint16(pseudo[10:], uint16(len(tcpWithPayload)))
+	return checksumFoldAndroid(sum16Android(pseudo) + sum16Android(tcpWithPayload))
 }
 
-// isRawAvailable reports whether AF_PACKET raw sockets can be opened.
-func isRawAvailable() bool {
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(ethPAll)))
-	if err != nil {
-		return false
+func sum16Android(data []byte) uint32 {
+	var s uint32
+	for i := 0; i+1 < len(data); i += 2 {
+		s += uint32(binary.BigEndian.Uint16(data[i:]))
 	}
-	_ = unix.Close(fd)
-	return true
+	if len(data)%2 == 1 {
+		s += uint32(data[len(data)-1]) << 8
+	}
+	for s>>16 != 0 {
+		s = (s & 0xFFFF) + (s >> 16)
+	}
+	return s
 }
 
-// RawStatus returns a human-readable diagnostic for raw injection.
-func RawStatus() string {
-	if isRawAvailable() {
-		return "available (AF_PACKET raw sockets)"
+func checksumFoldAndroid(s uint32) uint16 {
+	for s>>16 != 0 {
+		s = (s & 0xFFFF) + (s >> 16)
 	}
-	return "unavailable: AF_PACKET raw sockets require root / CAP_NET_RAW"
-}
-
-// IsRawAvailable reports whether raw packet injection is supported.
-func IsRawAvailable() bool {
-	return isRawAvailable()
+	return ^uint16(s)
 }
