@@ -33,7 +33,6 @@ builds:
       - android
     goarch:
       - arm64
-      - arm
     env:
       - CGO_ENABLED=0
     ldflags:
@@ -115,7 +114,7 @@ release:
     ## Platforms
     - Windows (amd64, arm64) — includes WinDivert.dll + driver for raw fake-SNI injection
     - Linux (amd64, arm64, arm32) — PIE builds for servers
-    - Android/Termux (arm64, arm32) — bionic TLS-aligned builds
+    - Android/Termux (arm64) — bionic TLS-aligned build
     - macOS (amd64, arm64)
 
     ## Features
@@ -127,8 +126,7 @@ release:
     - FinalMask TCP fragmentation
   footer: |
     ---
-    **Android / Termux:** Use the **android_arm64** build on aarch64 devices, or **android_arm** on 32-bit (armv7) devices.
-    These are built with GOOS=android so the TLS segment is correctly 64-byte aligned for Bionic. Run `chmod +x snispf-hj-go` after extracting.
+    **Android / Termux:** Use the **android_arm64** build (aarch64 devices). It is built with GOOS=android so the TLS segment is correctly 64-byte aligned for Bionic. Run `chmod +x snispf-hj-go` after extracting.
 
     **Windows users:** Run `snispf-hj-go.exe` as Administrator so WinDivert can load its driver.
     If WinDivert is missing, the app automatically falls back to fragmentation-only.
