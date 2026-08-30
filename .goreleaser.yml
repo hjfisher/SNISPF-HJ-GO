@@ -22,6 +22,10 @@ builds:
       - -X main.version={{.Version}}
     flags:
       - -trimpath
+    overrides:
+      - goos: linux
+        goarch: arm
+        buildmode: default
   - id: windows
     main: ./main.go
     binary: snispf-hj-go
