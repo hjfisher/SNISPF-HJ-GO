@@ -26,6 +26,21 @@ builds:
       - goos: linux
         goarch: arm
         buildmode: default
+  - id: android
+    main: ./main.go
+    binary: snispf-hj-go
+    goos:
+      - android
+    goarch:
+      - arm64
+      - arm
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    flags:
+      - -trimpath
   - id: windows
     main: ./main.go
     binary: snispf-hj-go
@@ -48,6 +63,15 @@ archives:
     formats:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - config.json
+  - id: android
+    ids:
+      - android
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_android_{{ .Arch }}"
     files:
       - README.md
       - config.json
@@ -90,7 +114,8 @@ release:
 
     ## Platforms
     - Windows (amd64, arm64) — includes WinDivert.dll + driver for raw fake-SNI injection
-    - Linux (amd64, arm64, arm32) — PIE builds, run on Android/Termux
+    - Linux (amd64, arm64, arm32) — PIE builds for servers
+    - Android/Termux (arm64, arm32) — bionic TLS-aligned builds
     - macOS (amd64, arm64)
 
     ## Features
@@ -102,8 +127,8 @@ release:
     - FinalMask TCP fragmentation
   footer: |
     ---
-    **Android / Termux:** Use the **linux_arm64** build on aarch64 devices, or **linux_arm** on 32-bit (armv7) devices.
-    The Linux builds are PIE (`ET_DYN`) so they load correctly under Android's linker. Run `chmod +x snispf-hj-go` after extracting.
+    **Android / Termux:** Use the **android_arm64** build on aarch64 devices, or **android_arm** on 32-bit (armv7) devices.
+    These are built with GOOS=android so the TLS segment is correctly 64-byte aligned for Bionic. Run `chmod +x snispf-hj-go` after extracting.
 
     **Windows users:** Run `snispf-hj-go.exe` as Administrator so WinDivert can load its driver.
     If WinDivert is missing, the app automatically falls back to fragmentation-only.
