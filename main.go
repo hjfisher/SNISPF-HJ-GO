@@ -370,16 +370,14 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	// Instantly cancel the context so server loops can respond to Ctrl+C/SIGTERM
-	// without having to wait for main() to return.
-	stop()
+	defer stop()
 
-	// goroutine that monitors for repeated signals and force-exits after grace period
+	// goroutine that monitors for a second SIGINT/SIGTERM and force-exits
+	// after a 3s grace period (the first signal cancels ctx → graceful shutdown).
 	go func() {
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-		<-sigc // first signal already handled via stop()
-		// second signal within 3s → force exit
+		<-sigc
 		time.Sleep(3 * time.Second)
 		log.Println("Force‑exiting after repeated signal")
 		os.Exit(1)
