@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -49,6 +50,7 @@ type Options struct {
 	UseRawInjection bool
 	RawInjector     *forward.RawInjector
 	InterfaceIP     *string
+	BypassVPN       bool
 }
 
 // Start runs the MITM relay server until ctx is cancelled.
@@ -178,7 +180,12 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 	// ── Upstream dial: optionally register with the raw injector ────────
 	var dialer *net.Dialer
 	var rawLocalPort int
+	var control func(network, address string, c syscall.RawConn) error
 	rawActive := opts.UseRawInjection && opts.RawInjector != nil && *opts.RawInjector != nil
+	localIP := net.ParseIP("")
+	if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
+		localIP = net.ParseIP(*opts.InterfaceIP)
+	}
 	if rawActive {
 		// Decoy SNI shown to the ISP: the per-connection pool SNI (activeSNI)
 		// so the censor sees a rotating fake SNI; falls back to FAKE_SNI.
@@ -187,11 +194,19 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 			decoy = opts.FakeSNI
 		}
 		fakeHello := tlsutil.BuildClientHelloRecord(decoy, opts.CipherSuites)
-		dialer = &net.Dialer{Timeout: dialTimeout, Control: forward.DialControl(*opts.RawInjector, fakeHello)}
+		control = forward.DialControl(*opts.RawInjector, fakeHello)
+		log.Printf("[%s] MITM upstream raw injection ACTIVE (decoy SNI=%s, real SNI=%s)", peer, decoy, serverName)
+	}
+	if opts.BypassVPN {
+		// Bind outbound sockets to the physical interface so an upstream VPN
+		// (e.g. v2rayNG) cannot capture/loop the backend's own connections.
+		control = forward.VPNBypassControl(localIP, control)
+	}
+	if control != nil || rawActive || opts.BypassVPN {
+		dialer = &net.Dialer{Timeout: dialTimeout, Control: control}
 		if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
 			dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
 		}
-		log.Printf("[%s] MITM upstream raw injection ACTIVE (decoy SNI=%s, real SNI=%s)", peer, decoy, serverName)
 	}
 
 	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, dialer)

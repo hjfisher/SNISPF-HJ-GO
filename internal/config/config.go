@@ -36,6 +36,7 @@ func DefaultConfig() *Config {
 		"MITM_ALPN":              []interface{}{"h2", "http/1.1"},
 		"MITM_USE_CLIENT_SNI":    false,
 		"MITM_RAW_INJECTION":     false,
+		"BYPASS_VPN":             false,
 		"FINGERPRINT":            nil,
 		"FINGERPRINT_TLS_BIN":    nil,
 		"FAKE_SNI_FRAGMENT_REAL": true,

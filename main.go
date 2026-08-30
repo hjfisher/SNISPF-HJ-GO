@@ -513,6 +513,7 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		UseRawInjection: useMITMRaw,
 		RawInjector:     mitmRawPtr,
 		InterfaceIP:     &mitmInterfaceIP,
+		BypassVPN:       cfg.GetBool("BYPASS_VPN", false),
 	}
 	if err := mitm.Start(ctx, opts); err != nil {
 		fmt.Printf("\nError: %v\n", err)
@@ -675,6 +676,7 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 		ConnManager:  connManager,
 		Masker:       masker,
 		CipherSuites: cipherSuites,
+		BypassVPN:    cfg.GetBool("BYPASS_VPN", false),
 	}
 	if err := forward.StartServer(ctx, opts); err != nil {
 		fmt.Printf("\nError: %v\n", err)

@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"snispf-hj-go/internal/finalmask"
@@ -31,6 +32,7 @@ type ForwardOptions struct {
 	ConnManager  *pool.ConnectionManager
 	Masker       *finalmask.FinalMasker
 	CipherSuites []uint16
+	BypassVPN    bool
 }
 
 // StartServer runs the plain-TCP forward server until ctx is cancelled.
@@ -162,13 +164,24 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 
 	// ── Open the outgoing socket (raw-injector registration before SYN) ──
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	var control func(network, address string, c syscall.RawConn) error
 	if opts.RawInjector != nil && *opts.RawInjector != nil {
 		fakeHello := tlsutil.BuildClientHelloRecord(activeSNI, opts.CipherSuites)
-		dialer.Control = rawDialControl(*opts.RawInjector, fakeHello)
+		control = rawDialControl(*opts.RawInjector, fakeHello)
 	}
 	if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
 	}
+	if opts.BypassVPN {
+		// Bind outbound sockets to the physical interface so an upstream VPN
+		// (e.g. v2rayNG) cannot capture/loop the backend's own connections.
+		var localIP net.IP
+		if ta, ok := dialer.LocalAddr.(*net.TCPAddr); ok {
+			localIP = ta.IP
+		}
+		control = VPNBypassControl(localIP, control)
+	}
+	dialer.Control = control
 
 	server, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(activeIP, strconv.Itoa(opts.ConnectPort)))
 	if err != nil {
