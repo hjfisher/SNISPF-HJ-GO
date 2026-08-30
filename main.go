@@ -370,7 +370,20 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Instantly cancel the context so server loops can respond to Ctrl+C/SIGTERM
+	// without having to wait for main() to return.
+	stop()
+
+	// goroutine that monitors for repeated signals and force-exits after grace period
+	go func() {
+		sigc := make(chan os.Signal, 1)
+		signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+		<-sigc // first signal already handled via stop()
+		// second signal within 3s → force exit
+		time.Sleep(3 * time.Second)
+		log.Println("Force‑exiting after repeated signal")
+		os.Exit(1)
+	}()
 
 	// MITM relay mode
 	if isMITMMethod(cfg) {
