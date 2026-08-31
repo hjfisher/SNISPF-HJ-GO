@@ -29,6 +29,7 @@ type portState struct {
 	fakeHello []byte
 	fakeSent  bool
 	confirmed chan struct{}
+	injected  chan struct{}
 }
 
 // RawInjector is the interface for raw packet injection.
@@ -38,6 +39,11 @@ type RawInjector interface {
 	RegisterPort(localPort int, fakeHello []byte)
 	CleanupPort(localPort int)
 	WaitForConfirmation(localPort int, timeout time.Duration) bool
+	// WaitForInjection waits until the fake ClientHello for this connection
+	// has actually been injected (or the timeout expires). Unlike
+	// WaitForConfirmation it never depends on the server replying, so it
+	// cannot stall the connection.
+	WaitForInjection(localPort int, timeout time.Duration) bool
 }
 
 // DialControl returns a net.Dialer.Control func that registers the local

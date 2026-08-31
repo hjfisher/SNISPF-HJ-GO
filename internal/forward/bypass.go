@@ -75,9 +75,11 @@ func (b *FakeSNIBypass) Apply(server net.Conn, fakeSNI string, firstData []byte)
 
 func (b *FakeSNIBypass) rawInjectSend(server net.Conn, firstData []byte) error {
 	localPort := server.LocalAddr().(*net.TCPAddr).Port
-	confirmed := b.RawInjector.WaitForConfirmation(localPort, 2*time.Second)
-	if !confirmed {
-		log.Printf("port=%d: server did not confirm fake was ignored (timeout). Sending real data anyway.", localPort)
+	// Wait only for the fake to be injected (server-independent), never for
+	// the server's confirmation — a stalled idle connection gets torn down on
+	// many networks, so blocking here killed every fake_sni connection.
+	if !b.RawInjector.WaitForInjection(localPort, 100*time.Millisecond) {
+		log.Printf("port=%d: fake not injected within 100ms. Sending real data anyway.", localPort)
 	}
 	tcp, _ := server.(*net.TCPConn)
 	if b.FragmentReal {
@@ -139,8 +141,11 @@ func (b *CombinedBypass) Apply(server net.Conn, fakeSNI string, firstData []byte
 	}
 	if b.RawInjector != nil {
 		localPort := server.LocalAddr().(*net.TCPAddr).Port
-		if !b.RawInjector.WaitForConfirmation(localPort, 2*time.Second) {
-			log.Printf("port=%d: no confirmation that server ignored the fake packet (timeout)", localPort)
+		// Wait only for the fake to be injected (server-independent), never
+		// for the server's confirmation — blocking here stalled every
+		// combined-mode connection for 2s, which got them torn down.
+		if !b.RawInjector.WaitForInjection(localPort, 100*time.Millisecond) {
+			log.Printf("port=%d: fake not injected within 100ms. Sending real data anyway.", localPort)
 		}
 	}
 	fragments := tlsutil.FragmentClientHello(firstData, b.FragmentStrat)

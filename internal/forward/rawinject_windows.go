@@ -180,7 +180,7 @@ func (r *windowsRawInjector) Stop() {
 
 func (r *windowsRawInjector) RegisterPort(localPort int, fakeHello []byte) {
 	r.portsMu.Lock()
-	r.ports[localPort] = &portState{fakeHello: fakeHello, confirmed: make(chan struct{})}
+	r.ports[localPort] = &portState{fakeHello: fakeHello, confirmed: make(chan struct{}), injected: make(chan struct{})}
 	r.portsMu.Unlock()
 }
 
@@ -199,6 +199,23 @@ func (r *windowsRawInjector) WaitForConfirmation(localPort int, timeout time.Dur
 	}
 	select {
 	case <-ps.confirmed:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// WaitForInjection waits until the fake ClientHello for this connection has
+// actually been injected (or the timeout expires).
+func (r *windowsRawInjector) WaitForInjection(localPort int, timeout time.Duration) bool {
+	r.portsMu.Lock()
+	ps := r.ports[localPort]
+	r.portsMu.Unlock()
+	if ps == nil {
+		return false
+	}
+	select {
+	case <-ps.injected:
 		return true
 	case <-time.After(timeout):
 		return false
@@ -299,7 +316,15 @@ func (r *windowsRawInjector) handlePacket(pkt []byte, addr *winDivertAddress) {
 
 			go func(tpl []byte, isn uint32, payload []byte, port int) {
 				time.Sleep(time.Millisecond)
-				if r.injectFake(tpl, isn, payload) {
+				ok := r.injectFake(tpl, isn, payload)
+				ps.mu.Lock()
+				select {
+				case <-ps.injected:
+				default:
+					close(ps.injected)
+				}
+				ps.mu.Unlock()
+				if ok {
 					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d)", port, isn+1-uint32(len(payload)), isn, len(payload))
 				} else {
 					log.Printf("[inject] port=%d injection failed", port)

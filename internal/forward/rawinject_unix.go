@@ -83,7 +83,7 @@ func (r *rawInjector) Stop() {
 
 func (r *rawInjector) RegisterPort(localPort int, fakeHello []byte) {
 	r.portsMu.Lock()
-	r.ports[localPort] = &portState{fakeHello: fakeHello, confirmed: make(chan struct{})}
+	r.ports[localPort] = &portState{fakeHello: fakeHello, confirmed: make(chan struct{}), injected: make(chan struct{})}
 	r.portsMu.Unlock()
 }
 
@@ -102,6 +102,23 @@ func (r *rawInjector) WaitForConfirmation(localPort int, timeout time.Duration) 
 	}
 	select {
 	case <-ps.confirmed:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// WaitForInjection waits until the fake ClientHello for this connection has
+// actually been injected (or the timeout expires).
+func (r *rawInjector) WaitForInjection(localPort int, timeout time.Duration) bool {
+	r.portsMu.Lock()
+	ps := r.ports[localPort]
+	r.portsMu.Unlock()
+	if ps == nil {
+		return false
+	}
+	select {
+	case <-ps.injected:
 		return true
 	case <-time.After(timeout):
 		return false
@@ -153,14 +170,19 @@ func (r *rawInjector) sniffLoop() {
 }
 
 func (r *rawInjector) handlePacket(pkt []byte) {
-	if len(pkt) < 14+20+20 {
-		return
+	// Detect the IP header offset. Android interfaces (rmnet, tun) are L3 and
+	// deliver bare IP packets WITHOUT the 14-byte Ethernet header; wlan0/eth
+	// deliver Ethernet-framed ones. The old code assumed Ethernet everywhere,
+	// which silently dropped every packet on Android.
+	ipOff := 14
+	if len(pkt) < 14+20+20 || binary.BigEndian.Uint16(pkt[12:14]) != ethPIP {
+		if len(pkt) >= 40 && pkt[0]>>4 == 4 {
+			ipOff = 0 // bare IPv4 packet (L3 interface)
+		} else {
+			return
+		}
 	}
-	// Ethernet type must be IPv4.
-	if binary.BigEndian.Uint16(pkt[12:14]) != ethPIP {
-		return
-	}
-	ip := pkt[14:]
+	ip := pkt[ipOff:]
 	if ip[0]>>4 != 4 || ip[9] != 6 {
 		return
 	}
@@ -168,9 +190,6 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 	if len(ip) < ihl+20 {
 		return
 	}
-	var srcIP, dstIP [4]byte
-	copy(srcIP[:], ip[12:16])
-	copy(dstIP[:], ip[16:20])
 	tcp := ip[ihl:]
 	if len(tcp) < 20 {
 		return
@@ -182,35 +201,33 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 	}
 	payloadLen := len(tcp) - tcpHdrLen
 
-	outbound := srcIP == r.localIP && dstIP == r.remoteIP
-	inbound := srcIP == r.remoteIP && dstIP == r.localIP
+	srcPort := int(binary.BigEndian.Uint16(tcp[0:2]))
+	dstPort := int(binary.BigEndian.Uint16(tcp[2:4]))
 
-	if outbound {
-		srcPort := int(binary.BigEndian.Uint16(tcp[0:2]))
-		seq := binary.BigEndian.Uint32(tcp[4:8])
+	// Outbound (device -> remote service): our ephemeral port is the source.
+	// Match on the fixed remote service port + the per-connection registered
+	// port instead of IP equality, so every pool IP is covered — not just the
+	// single CONNECT_IP the injector was created with.
+	if dstPort == r.remotePort {
+		r.portsMu.Lock()
+		ps := r.ports[srcPort]
+		r.portsMu.Unlock()
+		if ps == nil {
+			return
+		}
 
 		// SYN (no ACK): record the ISN for a new connection.
 		if flags&tcpSYN != 0 && flags&tcpACK == 0 {
-			r.portsMu.Lock()
-			ps := r.ports[srcPort]
-			r.portsMu.Unlock()
-			if ps != nil {
-				ps.mu.Lock()
-				ps.synSeq = seq
-				ps.mu.Unlock()
-				log.Printf("[sniff] SYN port=%d isn=%d", srcPort, seq)
-			}
+			isn := binary.BigEndian.Uint32(tcp[4:8])
+			ps.mu.Lock()
+			ps.synSeq = isn
+			ps.mu.Unlock()
+			log.Printf("[sniff] SYN port=%d isn=%d", srcPort, isn)
 			return
 		}
 
 		// 3rd-handshake ACK: inject the fake ClientHello.
 		if flags&tcpACK != 0 && flags&(tcpSYN|tcpFIN|tcpRST) == 0 && payloadLen == 0 {
-			r.portsMu.Lock()
-			ps := r.ports[srcPort]
-			r.portsMu.Unlock()
-			if ps == nil {
-				return
-			}
 			ps.mu.Lock()
 			if ps.fakeSent {
 				ps.mu.Unlock()
@@ -221,31 +238,37 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 			fake := append([]byte{}, ps.fakeHello...)
 			ps.mu.Unlock()
 
-			go func(tpl []byte, isn uint32, payload []byte, port int) {
+			go func(tpl []byte, isn uint32, payload []byte, port int, l3 bool) {
 				time.Sleep(time.Millisecond)
-				frame := buildFakeFrame(tpl, isn, payload)
-				if r.injectFrame(frame) {
+				frame := buildFakeFrame(tpl, isn, payload, ipOff)
+				ok := r.injectFrame(frame, l3)
+				select {
+				case <-ps.injected:
+				default:
+					close(ps.injected)
+				}
+				if ok {
 					outSeq := isn + 1 - uint32(len(payload))
 					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d)", port, outSeq, isn, len(payload))
 				} else {
 					log.Printf("[inject] port=%d injection failed", port)
 				}
-			}(append([]byte{}, pkt...), isn, fake, srcPort)
+			}(append([]byte{}, pkt...), isn, fake, srcPort, ipOff == 0)
 		}
+		return
 	}
 
-	if inbound {
-		dstPort := int(binary.BigEndian.Uint16(tcp[2:4]))
-		ackNum := binary.BigEndian.Uint32(tcp[8:12])
-
-		// Server ACK confirming the fake was ignored.
+	// Inbound (remote service -> device): server ACK confirming the fake was
+	// ignored.
+	if srcPort == r.remotePort {
+		r.portsMu.Lock()
+		ps := r.ports[dstPort]
+		r.portsMu.Unlock()
+		if ps == nil {
+			return
+		}
 		if flags&tcpACK != 0 && flags&(tcpSYN|tcpFIN|tcpRST) == 0 && payloadLen == 0 {
-			r.portsMu.Lock()
-			ps := r.ports[dstPort]
-			r.portsMu.Unlock()
-			if ps == nil {
-				return
-			}
+			ackNum := binary.BigEndian.Uint32(tcp[8:12])
 			ps.mu.Lock()
 			if ps.fakeSent && ackNum == ps.synSeq+1 {
 				select {
@@ -261,9 +284,9 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 }
 
 // buildFakeFrame rebuilds the captured 3rd-ACK packet with the fake
-// ClientHello payload and an out-of-window sequence number.
-func buildFakeFrame(templatePkt []byte, isn uint32, fakePayload []byte) []byte {
-	ipOff := 14
+// ClientHello payload and an out-of-window sequence number. ipOff is 14 for
+// Ethernet-framed interfaces, 0 for L3 (raw IP) ones.
+func buildFakeFrame(templatePkt []byte, isn uint32, fakePayload []byte, ipOff int) []byte {
 	ihl := int(templatePkt[ipOff]&0x0F) * 4
 	tcpOff := ipOff + ihl
 	tcpHdrLen := int(templatePkt[tcpOff+12]>>4) * 4
@@ -293,12 +316,14 @@ func buildFakeFrame(templatePkt []byte, isn uint32, fakePayload []byte) []byte {
 	return out
 }
 
-func (r *rawInjector) injectFrame(frame []byte) bool {
+func (r *rawInjector) injectFrame(frame []byte, l3 bool) bool {
 	addr := &unix.SockaddrLinklayer{
 		Protocol: htons(ethPIP),
 		Ifindex:  r.ifaceIdx,
-		Halen:    6,
-		Addr:     [8]byte{frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]},
+	}
+	if !l3 {
+		addr.Halen = 6
+		addr.Addr = [8]byte{frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]}
 	}
 	if err := unix.Sendto(r.fd, frame, 0, addr); err != nil {
 		log.Printf("Inject error: %v", err)
