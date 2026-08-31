@@ -222,6 +222,8 @@ func (r *windowsRawInjector) WaitForInjection(localPort int, timeout time.Durati
 	}
 }
 
+var sniffFirstOnce sync.Once
+
 func (r *windowsRawInjector) sniffLoop() {
 	buf := make([]byte, winDivertMTU)
 	for r.running {
@@ -242,6 +244,9 @@ func (r *windowsRawInjector) sniffLoop() {
 			continue
 		}
 		if recvLen > 0 {
+			sniffFirstOnce.Do(func() {
+				log.Printf("[sniff] WinDivert capture alive: first packet %d bytes", recvLen)
+			})
 			r.handlePacket(buf[:recvLen], &addr)
 		}
 	}
@@ -314,9 +319,10 @@ func (r *windowsRawInjector) handlePacket(pkt []byte, addr *winDivertAddress) {
 			fake := append([]byte{}, ps.fakeHello...)
 			ps.mu.Unlock()
 
-			go func(tpl []byte, isn uint32, payload []byte, port int) {
+			pktIfIdx := binary.LittleEndian.Uint32(addr[wdOffIfIdx:])
+			go func(tpl []byte, isn uint32, payload []byte, port int, obsIfIdx uint32) {
 				time.Sleep(time.Millisecond)
-				ok := r.injectFake(tpl, isn, payload)
+				ok := r.injectFake(tpl, isn, payload, obsIfIdx)
 				ps.mu.Lock()
 				select {
 				case <-ps.injected:
@@ -325,11 +331,11 @@ func (r *windowsRawInjector) handlePacket(pkt []byte, addr *winDivertAddress) {
 				}
 				ps.mu.Unlock()
 				if ok {
-					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d)", port, isn+1-uint32(len(payload)), isn, len(payload))
+					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d, ifidx=%d)", port, isn+1-uint32(len(payload)), isn, len(payload), obsIfIdx)
 				} else {
 					log.Printf("[inject] port=%d injection failed", port)
 				}
-			}(append([]byte{}, pkt...), isn, fake, srcPort)
+			}(append([]byte{}, pkt...), isn, fake, srcPort, pktIfIdx)
 		}
 		return
 	}
@@ -358,8 +364,11 @@ func (r *windowsRawInjector) handlePacket(pkt []byte, addr *winDivertAddress) {
 }
 
 // injectFake builds an IP+TCP frame carrying the fake ClientHello with an
-// out-of-window sequence number and sends it via WinDivert.
-func (r *windowsRawInjector) injectFake(template []byte, isn uint32, fakePayload []byte) bool {
+// out-of-window sequence number and sends it via WinDivert. obsIfIdx is the
+// interface index the monitored 3rd-ACK was observed on — injections follow
+// the connection's actual interface, so network switches (Wi-Fi <-> Ethernet)
+// don't send the fake out a stale interface.
+func (r *windowsRawInjector) injectFake(template []byte, isn uint32, fakePayload []byte, obsIfIdx uint32) bool {
 	if r.handle == syscall.InvalidHandle || r.handle == 0 {
 		return false
 	}
@@ -391,8 +400,12 @@ func (r *windowsRawInjector) injectFake(template []byte, isn uint32, fakePayload
 
 	var addr winDivertAddress
 	addr.setOutbound()
-	addr.setIfIdx(r.ifIdx)
-	addr.setSubIfIdx(r.subIfIdx)
+	ifIdx := obsIfIdx
+	if ifIdx == 0 {
+		ifIdx = r.ifIdx
+	}
+	addr.setIfIdx(ifIdx)
+	addr.setSubIfIdx(ifIdx)
 
 	var sendLen uint32
 	n, _, callErr := procWinDivertSend.Call(
