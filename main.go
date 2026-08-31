@@ -675,6 +675,20 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 
 	cipherSuites := tlsutil.ParseCipherSuiteIDs(cfg.Get("CIPHER_SUITES", nil))
 
+	// Auto-enable VPN bypass for the forward modes when running as root/admin:
+	// an upstream VPN (e.g. v2rayNG) must not capture/loop the backend's own
+	// outbound connections, especially while raw injection is active.
+	bypassVPN := cfg.GetBool("BYPASS_VPN", false)
+	if !bypassVPN {
+		switch method {
+		case "fragment", "fake_sni", "combined":
+			if isRootOrAdmin() {
+				bypassVPN = true
+				log.Printf("Root/admin detected: auto-enabling BYPASS_VPN for %s mode", method)
+			}
+		}
+	}
+
 	opts := &forward.ForwardOptions{
 		ListenHost:   cfg.GetString("LISTEN_HOST", "0.0.0.0"),
 		ListenPort:   cfg.GetInt("LISTEN_PORT", 40443),
@@ -687,7 +701,7 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 		ConnManager:  connManager,
 		Masker:       masker,
 		CipherSuites: cipherSuites,
-		BypassVPN:    cfg.GetBool("BYPASS_VPN", false),
+		BypassVPN:    bypassVPN,
 	}
 	if err := forward.StartServer(ctx, opts); err != nil {
 		fmt.Printf("\nError: %v\n", err)
@@ -700,6 +714,22 @@ func firstPairKey(m *pool.ConnectionManager) pool.PairKey {
 		return k
 	}
 	return pool.PairKey{}
+}
+
+// isRootOrAdmin reports whether the process runs with elevated privileges:
+// root (UID 0) on Linux/Android/macOS, Administrator on Windows.
+func isRootOrAdmin() bool {
+	if runtime.GOOS == "windows" {
+		// Best-effort elevation check: opening a physical device requires
+		// Administrator rights.
+		f, err := os.OpenFile(`\\.\PHYSICALDRIVE0`, os.O_RDONLY, 0)
+		if err != nil {
+			return false
+		}
+		_ = f.Close()
+		return true
+	}
+	return os.Geteuid() == 0
 }
 
 func interfaceLabel(ip string) string {
