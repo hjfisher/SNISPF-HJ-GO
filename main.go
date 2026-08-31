@@ -702,6 +702,13 @@ func runForward(ctx context.Context, cfg *config.Config, noRaw bool) {
 		Masker:       masker,
 		CipherSuites: cipherSuites,
 		BypassVPN:    bypassVPN,
+
+		// Connection-lifetime bounds: without them, censor-blackholed
+		// connections hang forever, hold their pair counter and handler
+		// slot, and active_conns explodes under client retry storms.
+		MaxActiveConns:   cfg.GetInt("MAX_ACTIVE_CONNS", 512),
+		HandshakeTimeout: time.Duration(cfg.GetInt("HANDSHAKE_TIMEOUT", 20)) * time.Second,
+		IdleTimeout:      time.Duration(cfg.GetInt("IDLE_TIMEOUT", 300)) * time.Second,
 	}
 	if err := forward.StartServer(ctx, opts); err != nil {
 		fmt.Printf("\nError: %v\n", err)

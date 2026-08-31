@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,7 +34,21 @@ type ForwardOptions struct {
 	Masker       *finalmask.FinalMasker
 	CipherSuites []uint16
 	BypassVPN    bool
+
+	// Connection-lifetime bounds (<=0 = built-in defaults). MaxActiveConns
+	// rejects new client connections once live upstream connections reach it;
+	// HandshakeTimeout closes connections the server never answers (DPI
+	// blackhole); IdleTimeout closes connections idle that long in either
+	// direction. Without these, censor-blackholed connections hang forever,
+	// hold their pair counter and handler slot, and active_conns explodes
+	// into thousands under client retry storms.
+	MaxActiveConns   int
+	HandshakeTimeout time.Duration
+	IdleTimeout      time.Duration
 }
+
+// activeUpstream counts live upstream connections (atomic) for the cap.
+var activeUpstream int64
 
 // StartServer runs the plain-TCP forward server until ctx is cancelled.
 func StartServer(ctx context.Context, opts *ForwardOptions) error {
@@ -106,6 +121,30 @@ func interfaceLabel(ip string) string {
 func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions) {
 	peer := client.RemoteAddr().String()
 	releasePair := func(pair *pool.PairStats, failed bool) {}
+
+	// Connection-lifetime bounds with built-in defaults.
+	maxActive := opts.MaxActiveConns
+	if maxActive <= 0 {
+		maxActive = 512
+	}
+	handshakeTimeout := opts.HandshakeTimeout
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = 20 * time.Second
+	}
+	idleTimeout := opts.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 300 * time.Second
+	}
+
+	// Global active-connection cap: reject immediately instead of queueing so
+	// a censor-blackhole retry storm cannot exhaust the handler pool.
+	if atomic.AddInt64(&activeUpstream, 1) > int64(maxActive) {
+		atomic.AddInt64(&activeUpstream, -1)
+		log.Printf("[%s] active connection limit reached (%d) — rejecting", peer, maxActive)
+		_ = client.Close()
+		return
+	}
+	defer atomic.AddInt64(&activeUpstream, -1)
 
 	var pair *pool.PairStats
 	activeIP := opts.ConnectIP
@@ -244,12 +283,19 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 	done := make(chan struct{})
 	var serverRespondedMu sync.Mutex
 	serverResponded := false
+	var clientWrote int32 // atomic: client sent data beyond the initial hello
 
 	relay := func(src, dst net.Conn, label string) {
 		buf := make([]byte, bufferSize)
 		for {
+			if idleTimeout > 0 {
+				_ = src.SetReadDeadline(time.Now().Add(idleTimeout))
+			}
 			r, rErr := src.Read(buf)
 			if r > 0 {
+				if label == "C->S" {
+					atomic.StoreInt32(&clientWrote, 1)
+				}
 				if label == "C->S" && maskerInstance != nil {
 					sink := func(chunk []byte) error {
 						_, err := dst.Write(chunk)
@@ -293,6 +339,7 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 		ev := pair.ForceCloseEvent()
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
+		start := time.Now()
 		for {
 			select {
 			case <-ev:
@@ -306,6 +353,30 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 				case <-done:
 					return
 				default:
+				}
+				// Handshake window: if the server never answered (DPI
+				// blackhole of the confusing out-of-window traffic) and the
+				// client never sent anything beyond the initial hello, this
+				// connection can never succeed. Tear it down so the pair
+				// counter and handler slot are released instead of piling
+				// up into thousands of stuck "active" connections.
+				serverRespondedMu.Lock()
+				responded := serverResponded
+				serverRespondedMu.Unlock()
+				wrote := atomic.LoadInt32(&clientWrote) == 1
+				now := time.Now()
+				if !responded && !wrote && now.Sub(start) > handshakeTimeout {
+					log.Printf("[%s] no server response and no client data within %v — closing (blackhole)", peer, handshakeTimeout)
+					_ = client.Close()
+					_ = server.Close()
+					continue
+				}
+				// Idle bound: nothing ever flowed beyond the hello.
+				if !responded && !wrote && now.Sub(start) > idleTimeout {
+					log.Printf("[%s] idle %v with no data — closing", peer, idleTimeout)
+					_ = client.Close()
+					_ = server.Close()
+					continue
 				}
 			}
 		}
