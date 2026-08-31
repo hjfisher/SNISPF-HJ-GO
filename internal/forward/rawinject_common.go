@@ -2,7 +2,6 @@ package forward
 
 import (
 	"encoding/binary"
-	"net"
 	"sync"
 	"syscall"
 	"time"
@@ -52,12 +51,11 @@ type RawInjector interface {
 // out-of-window fake-SNI hello is injected during the handshake. It is safe
 // to call on any platform: it returns nil where raw injection is unsupported.
 // The concrete injector is detected internally, so RawInjector may be nil.
-// bindIP pins the source address (interface IP); nil binds 0.0.0.0:0.
-func DialControl(inj RawInjector, fakeHello []byte, bindIP net.IP) func(network, address string, c syscall.RawConn) error {
+func DialControl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
 	if inj == nil {
 		return nil
 	}
-	return rawDialControl(inj, fakeHello, bindIP)
+	return rawDialControl(inj, fakeHello)
 }
 
 // htons converts a 16-bit value from host to network byte order.

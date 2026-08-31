@@ -32,7 +32,6 @@ var (
 	procWinDivertHelperCalcChecksums = winDivertDLL.NewProc("WinDivertHelperCalcChecksums")
 
 	procGetsockname = syscall.NewLazyDLL("ws2_32.dll").NewProc("getsockname")
-	procBind        = syscall.NewLazyDLL("ws2_32.dll").NewProc("bind")
 )
 
 // winDivertAddress mirrors WIN_DIVERT_ADDRESS (80 bytes). We only touch the
@@ -412,26 +411,13 @@ func (r *windowsRawInjector) injectFake(template []byte, isn uint32, fakePayload
 
 // rawDialControlImpl registers the outgoing socket's local port with the
 // WinDivert injector from inside net.Dialer.Control (before the SYN is sent).
-// Go invokes Dialer.Control BEFORE binding the socket, so getsockname there
-// returns port 0. We bind explicitly inside the control callback (kernel
-// assigns the ephemeral port), then read the port back and register it.
-func rawDialControlImpl(inj RawInjector, fakeHello []byte, bindIP net.IP) func(network, address string, c syscall.RawConn) error {
+func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
 	r, ok := inj.(*windowsRawInjector)
 	if !ok {
 		return nil
 	}
 	return func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
-			var bindSa syscall.RawSockaddrInet4
-			bindSa.Family = syscall.AF_INET
-			if bindIP != nil {
-				if ip4 := bindIP.To4(); ip4 != nil {
-					copy(bindSa.Addr[:], ip4)
-				}
-			}
-			if r1, _, _ := procBind.Call(fd, uintptr(unsafe.Pointer(&bindSa)), uintptr(unsafe.Sizeof(bindSa))); r1 != 0 {
-				return
-			}
 			var sa syscall.RawSockaddrInet4
 			size := uint32(unsafe.Sizeof(sa))
 			r1, _, e := procGetsockname.Call(fd, uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&size)))
@@ -439,9 +425,6 @@ func rawDialControlImpl(inj RawInjector, fakeHello []byte, bindIP net.IP) func(n
 				return
 			}
 			port := int(sa.Port>>8) | int(sa.Port&0xff)<<8
-			if port == 0 {
-				return
-			}
 			r.RegisterPort(port, fakeHello)
 		})
 	}

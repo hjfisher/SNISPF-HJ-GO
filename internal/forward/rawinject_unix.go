@@ -4,7 +4,6 @@ package forward
 
 import (
 	"encoding/binary"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -139,7 +138,7 @@ func findInterface(remoteIP string) (string, int) {
 		return "", 0
 	}
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || isVirtualIface(iface.Name) {
+		if iface.Flags&net.FlagUp == 0 {
 			continue
 		}
 		addrs, _ := iface.Addrs()
@@ -156,8 +155,6 @@ func findInterface(remoteIP string) (string, int) {
 	return "", 0
 }
 
-var sniffFirstOnce sync.Once
-
 func (r *rawInjector) sniffLoop() {
 	buf := make([]byte, 65536)
 	for r.running {
@@ -168,15 +165,6 @@ func (r *rawInjector) sniffLoop() {
 			}
 			continue
 		}
-		// One-time diagnostic: proves whether the AF_PACKET socket sees any
-		// traffic at all, and which framing (L2 vs L3) the interface uses.
-		sniffFirstOnce.Do(func() {
-			et := "n/a"
-			if n >= 14 {
-				et = fmt.Sprintf("0x%04x", binary.BigEndian.Uint16(buf[12:14]))
-			}
-			log.Printf("[sniff] socket alive: first packet %d bytes, ethertype=%s, first-byte=0x%02x (iface=%s)", n, et, buf[0], r.ifaceName)
-		})
 		r.handlePacket(buf[:n])
 	}
 }
@@ -346,35 +334,20 @@ func (r *rawInjector) injectFrame(frame []byte, l3 bool) bool {
 
 // rawDialControlImpl registers the outgoing socket's local port with the
 // raw injector from inside net.Dialer.Control (before the SYN is sent).
-// Go invokes Dialer.Control BEFORE binding the socket, so getsockname there
-// returns port 0 — the port the sniffer must match on. We therefore bind the
-// socket ourselves inside the control callback (which assigns the ephemeral
-// port), then read the port back and register it.
-func rawDialControlImpl(inj RawInjector, fakeHello []byte, bindIP net.IP) func(network, address string, c syscall.RawConn) error {
+func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
 	r, ok := inj.(*rawInjector)
 	if !ok {
 		return nil
 	}
 	return func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
-			if bindIP == nil {
-				bindIP = net.IPv4zero
-			}
-			sa := &syscall.SockaddrInet4{Port: 0}
-			copy(sa.Addr[:], bindIP.To4())
-			if err := syscall.Bind(int(fd), sa); err != nil {
-				log.Printf("[rawctl] bind failed: %v", err)
+			var sa syscall.RawSockaddrInet4
+			size := uint32(unsafe.Sizeof(sa))
+			_, _, errno := syscall.Syscall(syscall.SYS_GETSOCKNAME, fd, uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&size)))
+			if errno != 0 {
 				return
 			}
-			var sa2 syscall.RawSockaddrInet4
-			size := uint32(unsafe.Sizeof(sa2))
-			if _, _, errno := syscall.Syscall(syscall.SYS_GETSOCKNAME, fd, uintptr(unsafe.Pointer(&sa2)), uintptr(unsafe.Pointer(&size))); errno != 0 {
-				return
-			}
-			port := int(sa2.Port>>8) | int(sa2.Port&0xff)<<8
-			if port == 0 {
-				return
-			}
+			port := int(sa.Port>>8) | int(sa.Port&0xff)<<8
 			r.RegisterPort(port, fakeHello)
 		})
 	}

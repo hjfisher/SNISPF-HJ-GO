@@ -2,10 +2,7 @@
 
 package forward
 
-import (
-	"net"
-	"syscall"
-)
+import "syscall"
 
 // NewRawInjector returns nil on platforms without AF_PACKET or WinDivert.
 func NewRawInjector(localIP, remoteIP string, remotePort int) RawInjector {
@@ -13,7 +10,7 @@ func NewRawInjector(localIP, remoteIP string, remotePort int) RawInjector {
 }
 
 // rawDialControlImpl is a no-op off-Linux/off-Windows.
-func rawDialControlImpl(inj RawInjector, fakeHello []byte, bindIP net.IP) func(network, address string, c syscall.RawConn) error {
+func rawDialControlImpl(inj RawInjector, fakeHello []byte) func(network, address string, c syscall.RawConn) error {
 	return nil
 }
 

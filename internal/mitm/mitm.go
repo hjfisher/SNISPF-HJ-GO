@@ -182,9 +182,9 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 	var rawLocalPort int
 	var control func(network, address string, c syscall.RawConn) error
 	rawActive := opts.UseRawInjection && opts.RawInjector != nil && *opts.RawInjector != nil
-	var bindIP net.IP
+	localIP := net.ParseIP("")
 	if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
-		bindIP = net.ParseIP(*opts.InterfaceIP)
+		localIP = net.ParseIP(*opts.InterfaceIP)
 	}
 	if rawActive {
 		// Decoy SNI shown to the ISP: the per-connection pool SNI (activeSNI)
@@ -194,23 +194,18 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 			decoy = opts.FakeSNI
 		}
 		fakeHello := tlsutil.BuildClientHelloRecord(decoy, opts.CipherSuites)
-		// The control callback binds the socket itself (Go runs Control
-		// before its own bind) and registers the assigned local port.
-		control = forward.DialControl(*opts.RawInjector, fakeHello, bindIP)
+		control = forward.DialControl(*opts.RawInjector, fakeHello)
 		log.Printf("[%s] MITM upstream raw injection ACTIVE (decoy SNI=%s, real SNI=%s)", peer, decoy, serverName)
 	}
 	if opts.BypassVPN {
 		// Bind outbound sockets to the physical interface so an upstream VPN
 		// (e.g. v2rayNG) cannot capture/loop the backend's own connections.
-		control = forward.VPNBypassControl(bindIP, control)
+		control = forward.VPNBypassControl(localIP, control)
 	}
 	if control != nil || rawActive || opts.BypassVPN {
 		dialer = &net.Dialer{Timeout: dialTimeout, Control: control}
-		if rawActive {
-			// Socket is bound inside Control; LocalAddr must stay nil or
-			// Go's bind would fail with EINVAL (already bound).
-		} else if bindIP != nil {
-			dialer.LocalAddr = &net.TCPAddr{IP: bindIP}
+		if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
+			dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
 		}
 	}
 
