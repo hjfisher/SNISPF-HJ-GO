@@ -165,21 +165,24 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 	// ── Open the outgoing socket (raw-injector registration before SYN) ──
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	var control func(network, address string, c syscall.RawConn) error
-	if opts.RawInjector != nil && *opts.RawInjector != nil {
-		fakeHello := tlsutil.BuildClientHelloRecord(activeSNI, opts.CipherSuites)
-		control = rawDialControl(*opts.RawInjector, fakeHello)
-	}
+	var bindIP net.IP
 	if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
-		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
+		bindIP = net.ParseIP(*opts.InterfaceIP)
+	}
+	if opts.RawInjector != nil && *opts.RawInjector != nil {
+		// The control callback binds the socket itself (needed because Go
+		// runs Control before its own bind) and registers the assigned
+		// local port. LocalAddr must stay nil or Go's bind would fail with
+		// EINVAL (socket already bound).
+		fakeHello := tlsutil.BuildClientHelloRecord(activeSNI, opts.CipherSuites)
+		control = rawDialControl(*opts.RawInjector, fakeHello, bindIP)
+	} else if bindIP != nil {
+		dialer.LocalAddr = &net.TCPAddr{IP: bindIP}
 	}
 	if opts.BypassVPN {
 		// Bind outbound sockets to the physical interface so an upstream VPN
 		// (e.g. v2rayNG) cannot capture/loop the backend's own connections.
-		var localIP net.IP
-		if ta, ok := dialer.LocalAddr.(*net.TCPAddr); ok {
-			localIP = ta.IP
-		}
-		control = VPNBypassControl(localIP, control)
+		control = VPNBypassControl(bindIP, control)
 	}
 	dialer.Control = control
 
