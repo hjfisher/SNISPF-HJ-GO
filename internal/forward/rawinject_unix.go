@@ -4,6 +4,7 @@ package forward
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -85,6 +86,7 @@ func (r *rawInjector) RegisterPort(localPort int, fakeHello []byte) {
 	r.portsMu.Lock()
 	r.ports[localPort] = &portState{fakeHello: fakeHello, confirmed: make(chan struct{}), injected: make(chan struct{})}
 	r.portsMu.Unlock()
+	log.Printf("[rawctl] registered port=%d fake_len=%d", localPort, len(fakeHello))
 }
 
 func (r *rawInjector) CleanupPort(localPort int) {
@@ -155,6 +157,8 @@ func findInterface(remoteIP string) (string, int) {
 	return "", 0
 }
 
+var sniffFirstOnce sync.Once
+
 func (r *rawInjector) sniffLoop() {
 	buf := make([]byte, 65536)
 	for r.running {
@@ -165,6 +169,15 @@ func (r *rawInjector) sniffLoop() {
 			}
 			continue
 		}
+		// One-time diagnostic: proves whether the AF_PACKET socket sees any
+		// traffic at all, and which framing (L2 vs L3) the interface uses.
+		sniffFirstOnce.Do(func() {
+			et := "n/a"
+			if n >= 14 {
+				et = fmt.Sprintf("0x%04x", binary.BigEndian.Uint16(buf[12:14]))
+			}
+			log.Printf("[sniff] socket alive: first packet %d bytes, ethertype=%s, first-byte=0x%02x (iface=%s)", n, et, buf[0], r.ifaceName)
+		})
 		r.handlePacket(buf[:n])
 	}
 }

@@ -165,21 +165,32 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 	// ── Open the outgoing socket (raw-injector registration before SYN) ──
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	var control func(network, address string, c syscall.RawConn) error
-	if opts.RawInjector != nil && *opts.RawInjector != nil {
-		fakeHello := tlsutil.BuildClientHelloRecord(activeSNI, opts.CipherSuites)
-		control = rawDialControl(*opts.RawInjector, fakeHello)
+	var ifaceIPStr string
+	if opts.InterfaceIP != nil {
+		ifaceIPStr = *opts.InterfaceIP
 	}
-	if opts.InterfaceIP != nil && *opts.InterfaceIP != "" {
-		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(*opts.InterfaceIP)}
+	if opts.RawInjector != nil && *opts.RawInjector != nil {
+		// Register the connection with the injector BEFORE the SYN goes out.
+		// Dialer.Control runs before Go binds the socket, so the local port
+		// cannot be read there; instead we reserve a free port with a
+		// throwaway listener and pin it via LocalAddr. The sniffer then
+		// matches the SYN on this port and injects the fake on the 3rd ACK.
+		fakeHello := tlsutil.BuildClientHelloRecord(activeSNI, opts.CipherSuites)
+		if port, pErr := reserveEphemeralPort(ifaceIPStr); pErr == nil && port > 0 {
+			(*opts.RawInjector).RegisterPort(port, fakeHello)
+			dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(ifaceIPStr), Port: port}
+		}
+	} else if ifaceIPStr != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(ifaceIPStr)}
 	}
 	if opts.BypassVPN {
 		// Bind outbound sockets to the physical interface so an upstream VPN
 		// (e.g. v2rayNG) cannot capture/loop the backend's own connections.
 		var localIP net.IP
-		if ta, ok := dialer.LocalAddr.(*net.TCPAddr); ok {
-			localIP = ta.IP
+		if ifaceIPStr != "" {
+			localIP = net.ParseIP(ifaceIPStr)
 		}
-		control = VPNBypassControl(localIP, control)
+		control = VPNBypassControl(localIP, nil)
 	}
 	dialer.Control = control
 
@@ -316,3 +327,18 @@ func handleConnection(ctx context.Context, client net.Conn, opts *ForwardOptions
 // outgoing socket's local port with the raw injector before the SYN goes
 // out. Platform-specific implementations live in tagged files.
 var rawDialControl = rawDialControlImpl
+
+// reserveEphemeralPort asks the kernel for a free local TCP port by binding a
+// throwaway listener and closing it. The port is then pinned as the dial's
+// LocalAddr so the raw injector knows it before the SYN is sent. There is a
+// small race window between the close and the dial's bind; if lost, that
+// single dial fails (rare in practice).
+func reserveEphemeralPort(host string) (int, error) {
+	l, err := net.Listen("tcp4", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return 0, err
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return port, nil
+}
