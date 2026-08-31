@@ -50,22 +50,26 @@ func (r *rawInjector) Start() bool {
 	}
 	r.fd = fd
 
-	name, idx := findInterface(net.IPv4(r.remoteIP[0], r.remoteIP[1], r.remoteIP[2], r.remoteIP[3]).String())
-	if name == "" {
-		log.Printf("Cannot determine outgoing interface for raw injection")
+	// Bind to ALL interfaces (ifindex 0). Android can switch the traffic path
+	// mid-session (Wi-Fi <-> cellular, or an upstream VPN re-routing), and a
+	// socket bound to one interface goes blind exactly then — connections keep
+	// working but the sniffer never sees their handshake and no fake is
+	// injected. We filter by the registered ports instead, and inject on the
+	// interface each monitored packet was actually observed on.
+	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(ethPAll), Ifindex: 0}); err != nil {
+		log.Printf("Cannot bind AF_PACKET socket: %v", err)
 		_ = unix.Close(fd)
 		r.fd = -1
 		return false
 	}
-	r.ifaceName = name
-	r.ifaceIdx = idx
-	log.Printf("Using interface %s (index %d)", name, idx)
 
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(ethPAll), Ifindex: idx}); err != nil {
-		log.Printf("Cannot bind raw socket to %s: %v", name, err)
-		_ = unix.Close(fd)
-		r.fd = -1
-		return false
+	// Diagnostics only: log the current egress interface for the target.
+	if name, idx := findInterface(net.IPv4(r.remoteIP[0], r.remoteIP[1], r.remoteIP[2], r.remoteIP[3]).String()); name != "" {
+		r.ifaceName = name
+		r.ifaceIdx = idx
+		log.Printf("Using interface %s (index %d) for diagnostics (sniffer watches ALL interfaces)", name, idx)
+	} else {
+		log.Printf("Sniffer watches ALL interfaces (egress interface undetermined)")
 	}
 
 	r.running = true
@@ -162,7 +166,7 @@ var sniffFirstOnce sync.Once
 func (r *rawInjector) sniffLoop() {
 	buf := make([]byte, 65536)
 	for r.running {
-		n, _, err := unix.Recvfrom(r.fd, buf, 0)
+		n, from, err := unix.Recvfrom(r.fd, buf, 0)
 		if err != nil {
 			if !r.running {
 				break
@@ -171,18 +175,22 @@ func (r *rawInjector) sniffLoop() {
 		}
 		// One-time diagnostic: proves whether the AF_PACKET socket sees any
 		// traffic at all, and which framing (L2 vs L3) the interface uses.
+		pktIfIdx := 0
+		if ll, ok := from.(*unix.SockaddrLinklayer); ok {
+			pktIfIdx = ll.Ifindex
+		}
 		sniffFirstOnce.Do(func() {
 			et := "n/a"
 			if n >= 14 {
 				et = fmt.Sprintf("0x%04x", binary.BigEndian.Uint16(buf[12:14]))
 			}
-			log.Printf("[sniff] socket alive: first packet %d bytes, ethertype=%s, first-byte=0x%02x (iface=%s)", n, et, buf[0], r.ifaceName)
+			log.Printf("[sniff] socket alive: first packet %d bytes, ethertype=%s, first-byte=0x%02x (pkt-iface-idx=%d)", n, et, buf[0], pktIfIdx)
 		})
-		r.handlePacket(buf[:n])
+		r.handlePacket(buf[:n], pktIfIdx)
 	}
 }
 
-func (r *rawInjector) handlePacket(pkt []byte) {
+func (r *rawInjector) handlePacket(pkt []byte, ifIdx int) {
 	// Detect the IP header offset. Android interfaces (rmnet, tun) are L3 and
 	// deliver bare IP packets WITHOUT the 14-byte Ethernet header; wlan0/eth
 	// deliver Ethernet-framed ones. The old code assumed Ethernet everywhere,
@@ -251,10 +259,10 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 			fake := append([]byte{}, ps.fakeHello...)
 			ps.mu.Unlock()
 
-			go func(tpl []byte, isn uint32, payload []byte, port int, l3 bool) {
+			go func(tpl []byte, isn uint32, payload []byte, port int, l3 bool, ifIdx int) {
 				time.Sleep(time.Millisecond)
 				frame := buildFakeFrame(tpl, isn, payload, ipOff)
-				ok := r.injectFrame(frame, l3)
+				ok := r.injectFrame(frame, l3, ifIdx)
 				select {
 				case <-ps.injected:
 				default:
@@ -262,11 +270,11 @@ func (r *rawInjector) handlePacket(pkt []byte) {
 				}
 				if ok {
 					outSeq := isn + 1 - uint32(len(payload))
-					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d)", port, outSeq, isn, len(payload))
+					log.Printf("[inject] port=%d fake seq=%d (ISN=%d, fake_len=%d, ifidx=%d)", port, outSeq, isn, len(payload), ifIdx)
 				} else {
 					log.Printf("[inject] port=%d injection failed", port)
 				}
-			}(append([]byte{}, pkt...), isn, fake, srcPort, ipOff == 0)
+			}(append([]byte{}, pkt...), isn, fake, srcPort, ipOff == 0, ifIdx)
 		}
 		return
 	}
@@ -329,10 +337,15 @@ func buildFakeFrame(templatePkt []byte, isn uint32, fakePayload []byte, ipOff in
 	return out
 }
 
-func (r *rawInjector) injectFrame(frame []byte, l3 bool) bool {
+func (r *rawInjector) injectFrame(frame []byte, l3 bool, ifIdx int) bool {
+	// Inject on the interface the monitored packet was observed on; fall back
+	// to the interface detected at startup if the observation didn't carry one.
+	if ifIdx == 0 {
+		ifIdx = r.ifaceIdx
+	}
 	addr := &unix.SockaddrLinklayer{
 		Protocol: htons(ethPIP),
-		Ifindex:  r.ifaceIdx,
+		Ifindex:  ifIdx,
 	}
 	if !l3 {
 		addr.Halen = 6
