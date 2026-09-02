@@ -438,6 +438,34 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 
 	uconn := utls.UClient(raw, uTLSConfig, id)
 	uconn.SetSNI(serverName)
+	if uTLSConfig.EncryptedClientHelloConfigList != nil {
+		// With ECH enabled, utls builds the hello from the fingerprint and
+		// Config.NextProtos only lands on the OUTER hello; the inner hello
+		// keeps the fingerprint's default ALPN (h2,http/1.1 for Chrome), so
+		// the upstream selects an ALPN the MITM client session did not
+		// advertise — 'server selected unadvertised ALPN protocol'.
+		// Materialize the hello, pin the ALPN extension to the client's
+		// forwarded ALPN, and rebuild (same technique xray uses to fix the
+		// outer ALPN of its ECH hellos).
+		if err := uconn.BuildHandshakeState(); err != nil {
+			_ = raw.Close()
+			return nil, err
+		}
+		hasALPN := false
+		for _, ext := range uconn.Extensions {
+			if a, ok := ext.(*utls.ALPNExtension); ok {
+				a.AlpnProtocols = alpn
+				hasALPN = true
+			}
+		}
+		if !hasALPN {
+			uconn.Extensions = append(uconn.Extensions, &utls.ALPNExtension{AlpnProtocols: alpn})
+		}
+		if err := uconn.BuildHandshakeState(); err != nil {
+			_ = raw.Close()
+			return nil, err
+		}
+	}
 	_ = uconn.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()

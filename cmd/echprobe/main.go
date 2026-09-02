@@ -119,6 +119,7 @@ func main() {
 	list := flag.String("list", "crypto.cloudflare.com+https://cloudflare-dns.com/dns-query", "ECH config list source")
 	alpn := flag.String("alpn", "http/1.1", "comma-separated ALPN for the inner hello")
 	noECH := flag.Bool("no-ech", false, "baseline: handshake without ECH")
+	insecure := flag.Bool("insecure", false, "skip certificate verification (for the MITM-facing test)")
 	httpGet := flag.Bool("http", false, "after handshake, send a real GET and print the response status")
 	flag.Parse()
 
@@ -152,11 +153,29 @@ func main() {
 
 	uconn := utls.UClient(raw, &utls.Config{
 		ServerName:                      *sni,
-		InsecureSkipVerify:              true,
+		InsecureSkipVerify:              *insecure,
 		NextProtos:                      alpnList,
 		EncryptedClientHelloConfigList:  echList,
 	}, utls.HelloChrome_Auto)
 	uconn.SetSNI(*sni)
+	// Pin the advertised ALPN to the requested list (what xray/v2rayNG do):
+	// the fingerprint's own ALPN (h2,http/1.1) would otherwise be advertised
+	// while verification runs against Config.NextProtos.
+	if len(alpnList) > 0 {
+		if err := uconn.BuildHandshakeState(); err != nil {
+			fmt.Printf("[echprobe] BUILD FAILED: %v\n", err)
+			return
+		}
+		for _, ext := range uconn.Extensions {
+			if a, ok := ext.(*utls.ALPNExtension); ok {
+				a.AlpnProtocols = alpnList
+			}
+		}
+		if err := uconn.BuildHandshakeState(); err != nil {
+			fmt.Printf("[echprobe] REBUILD FAILED: %v\n", err)
+			return
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
