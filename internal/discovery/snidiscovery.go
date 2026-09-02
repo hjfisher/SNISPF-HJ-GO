@@ -358,14 +358,19 @@ func (d *SNIDiscovery) scanRound() {
 	}
 	log.Printf("SNI discovery: checking %d candidate domain(s) ...", len(candidates))
 
-	// Step 1: resolve + Cloudflare filter.
+	// Step 1: resolve + Cloudflare filter. Concurrency is bounded so DNS
+	// resolution does not fan out one goroutine per domain.
+	const probeConcurrency = 8
 	var cfCandidates []string
 	var cfMu sync.Mutex
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, probeConcurrency)
 	for _, dom := range candidates {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(domain string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			ip := resolveDomain(context.Background(), domain, 5*time.Second)
 			if ip != "" && IsCloudflareIP(ip) {
 				cfMu.Lock()
@@ -373,7 +378,6 @@ func (d *SNIDiscovery) scanRound() {
 				cfMu.Unlock()
 			}
 		}(dom)
-		time.Sleep(time.Duration(randFloat(0, 10)) * time.Millisecond)
 	}
 	wg.Wait()
 	log.Printf("SNI discovery: %d / %d candidates are Cloudflare-hosted", len(cfCandidates), len(candidates))
@@ -391,8 +395,10 @@ func (d *SNIDiscovery) scanRound() {
 	var accMu sync.Mutex
 	for _, dom := range cfCandidates {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(domain string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			rate := tlsProbeSNI(probeIP, domain, d.Port, d.ProbeTimeout, d.ProbeAttempts)
 			if rate >= d.MinSuccessRate {
 				accMu.Lock()
@@ -400,7 +406,6 @@ func (d *SNIDiscovery) scanRound() {
 				accMu.Unlock()
 			}
 		}(dom)
-		time.Sleep(time.Duration(randFloat(0, 20)) * time.Millisecond)
 	}
 	wg.Wait()
 	log.Printf("SNI discovery: %d / %d Cloudflare domains passed TLS probe (>=%.0f%%)",

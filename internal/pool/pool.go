@@ -544,16 +544,25 @@ func (e *CombinationExplorer) ProbeOne(ps *PairStats) {
 	}
 }
 
+// probeConcurrency bounds simultaneous probe connections. Without this,
+// runProbesParallel spawned one goroutine PER PAIR — every health cycle
+// opened ~25 pairs × ProbeCount TLS handshakes at once and IP/SNI discovery
+// bursts opened hundreds more, which network monitors count as an enormous
+// connection churn (and it hammers the radio, draining battery on Android).
+const probeConcurrency = 8
+
 func (e *CombinationExplorer) runProbesParallel(pairs []*PairStats) {
 	rand.Shuffle(len(pairs), func(i, j int) { pairs[i], pairs[j] = pairs[j], pairs[i] })
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, probeConcurrency)
 	for _, ps := range pairs {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(p *PairStats) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			e.ProbeOne(p)
 		}(ps)
-		time.Sleep(time.Duration(randFloat(0, 30)) * time.Millisecond)
 	}
 	wg.Wait()
 }

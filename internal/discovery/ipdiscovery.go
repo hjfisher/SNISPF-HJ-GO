@@ -164,13 +164,19 @@ func (d *IPDiscovery) scanRound() {
 	}
 	log.Printf("IP discovery: probing %d candidates (batch=%d, %d new) ...", len(fresh), d.ScanBatch, len(fresh))
 
+	// Bound concurrent probes: one goroutine per IP with no limit opened
+	// ScanBatch × ProbeAttempts TLS handshakes in a single burst.
+	const probeConcurrency = 8
 	var accepted []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, probeConcurrency)
 	for _, ip := range fresh {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(ip string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			rate := tlsProbe(ip, d.Port, d.ProbeTimeout, d.ProbeAttempts)
 			if rate >= d.MinSuccessRate {
 				mu.Lock()
@@ -178,7 +184,6 @@ func (d *IPDiscovery) scanRound() {
 				mu.Unlock()
 			}
 		}(ip)
-		time.Sleep(time.Duration(randFloat(0, 20)) * time.Millisecond)
 	}
 	wg.Wait()
 
