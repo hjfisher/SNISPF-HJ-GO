@@ -42,6 +42,9 @@ type Options struct {
 	ConnManager    *pool.ConnectionManager
 	Fingerprint    string
 	FingerprintBin string
+	// ECHGrease appends a GREASE Encrypted Client Hello extension to the
+	// upstream uTLS hello (Chrome-like; see openUpstream doc).
+	ECHGrease bool
 	// Raw injection on the upstream connection (seq_id trick). When enabled
 	// and a raw backend is available, the MITM upstream dial is registered
 	// with the raw injector so an out-of-window fake-SNI hello is injected.
@@ -209,7 +212,7 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 		}
 	}
 
-	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, dialer)
+	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, dialer, opts.ECHGrease)
 	if err != nil {
 		log.Printf("[%s] upstream connect %s:%d failed: %v", peer, activeIP, opts.ConnectPort, err)
 		releasePair(true)
@@ -353,7 +356,12 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 // openUpstream connects to the real upstream and completes TLS. With a
 // fingerprint profile the handshake is driven in-process by uTLS (a
 // byte-perfect browser ClientHello); otherwise Go's crypto/tls builds it.
-func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16, dialer *net.Dialer) (net.Conn, error) {
+// echGrease adds a GREASE Encrypted Client Hello extension to the upstream
+// uTLS hello — Chrome sends ECH grease in its real hellos, so this makes the
+// impersonated hello match current Chrome exactly and exercises censor-side
+// ECH handling. Note: GREASE does NOT encrypt/hide the SNI — uTLS v1.8.2 has
+// no real (encrypting) client ECH yet; true ECH can be layered later.
+func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16, dialer *net.Dialer, echGrease bool) (net.Conn, error) {
 	if dialer == nil {
 		dialer = &net.Dialer{Timeout: dialTimeout}
 	}
@@ -391,6 +399,11 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 		NextProtos:         alpn,
 	}, id)
 	uconn.SetSNI(serverName)
+	if echGrease {
+		// The extension's writeToUConn points uconn.ech at it and the ECH
+		// generation hook runs inside MarshalClientHello.
+		uconn.Extensions = append(uconn.Extensions, &utls.GREASEECHExtension{})
+	}
 	_ = uconn.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()

@@ -521,6 +521,7 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		UseClientSNI: useClientSNI,
 		ConnManager:  connManager,
 		Fingerprint:  fingerprintVal,
+		ECHGrease:    cfg.GetBool("MITM_ECH_GREASE", false),
 		UseRawInjection: useMITMRaw,
 		RawInjector:     mitmRawPtr,
 		InterfaceIP:     &mitmInterfaceIP,
