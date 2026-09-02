@@ -373,12 +373,28 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 
 	fpName := tlsutil.ResolveFingerprint(fingerprint)
 	if fpName == "" {
-		tconn := tls.Client(raw, &tls.Config{
+		// Plain crypto/tls path. Go 1.24+ supports ECH natively via
+		// EncryptedClientHelloConfigList.
+		tlsCfg := &tls.Config{
 			ServerName:         serverName,
 			InsecureSkipVerify: true,
 			NextProtos:         alpn,
 			CipherSuites:       cipherSuites,
-		})
+		}
+		if echConfigList != "" {
+			cfg, failClosed, echErr := applyECH(echConfigList, echForceQuery, serverName)
+			if echErr != nil && failClosed {
+				log.Printf("[ECH] config fetch failed (force-query=full): %v — connection will fail closed", echErr)
+			} else if echErr != nil {
+				log.Printf("[ECH] config fetch failed, falling back to plain TLS: %v", echErr)
+			}
+			if cfg != nil {
+				tlsCfg.EncryptedClientHelloConfigList = cfg
+			} else if failClosed {
+				tlsCfg.EncryptedClientHelloConfigList = invalidECHConfig
+			}
+		}
+		tconn := tls.Client(raw, tlsCfg)
 		_ = tconn.SetDeadline(time.Now().Add(handshakeTimeout))
 		if err := tconn.HandshakeContext(ctx); err != nil {
 			_ = raw.Close()
@@ -405,17 +421,18 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 		NextProtos:         alpn,
 	}
 	if echConfigList != "" {
-		cfg, failClosed, echErr := applyECH(echConfigList, echForceQuery)
+		cfg, failClosed, echErr := applyECH(echConfigList, echForceQuery, serverName)
 		if echErr != nil && failClosed {
 			log.Printf("[ECH] config fetch failed (force-query=full): %v — connection will fail closed", echErr)
 		} else if echErr != nil {
 			log.Printf("[ECH] config fetch failed, falling back to plain TLS: %v", echErr)
 		}
 		if cfg != nil {
-			// Per xray: with ECH the outer ALPN is h2,http/1.1 and the
-			// configured ALPN hides inside the encrypted hello.
+			// With ECH the inner hello carries the client's forwarded ALPN
+			// (the outer hello keeps the fingerprint's own ALPN list, which
+			// is what the censor sees). xray forces http/1.1 here because
+			// its upstream never forwards client ALPN; our MITM does.
 			uTLSConfig.EncryptedClientHelloConfigList = cfg
-			uTLSConfig.NextProtos = []string{"http/1.1"}
 		}
 	}
 

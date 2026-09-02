@@ -36,9 +36,12 @@ import (
 )
 
 // echResolve returns the raw ECHConfigList bytes for the configured source.
+// serverName is the per-connection upstream SNI, used as the query domain
+// when the config has no "domain+" prefix (xray behavior) — so each target's
+// own ECH config is fetched and targets without ECH fall back cleanly.
 // Results are cached per (server, domain) with the DNS TTL; an expired-but-
 // recent cache entry is served immediately and refreshed in the background.
-func echResolve(echConfigList string) ([]byte, error) {
+func echResolve(echConfigList, serverName string) ([]byte, error) {
 	list := strings.TrimSpace(echConfigList)
 	if list == "" {
 		return nil, fmt.Errorf("ECH: empty config list")
@@ -63,7 +66,11 @@ func echResolve(echConfigList string) ([]byte, error) {
 		dnsServer = parts[0]
 	}
 	if nameToQuery == "" {
-		return nil, fmt.Errorf("ECH: DNS source needs \"domain+\" before the server URL (example.com+https://1.1.1.1/dns-query)")
+		// Per-connection SNI (xray behavior when only the server URL is set).
+		if serverName == "" {
+			return nil, fmt.Errorf("ECH: DNS source needs \"domain+\" before the server URL (example.com+https://1.1.1.1/dns-query)")
+		}
+		nameToQuery = serverName
 	}
 	return echQueryRecord(nameToQuery, dnsServer)
 }
@@ -247,11 +254,11 @@ var invalidECHConfig = []byte{1, 1, 4, 5, 1, 4}
 
 // applyECH resolves the config (per forceQuery semantics) and returns a
 // utls.Config field value ready to use, plus whether ECH is active.
-func applyECH(echConfigList, forceQuery string) (configList []byte, failClosed bool, err error) {
+func applyECH(echConfigList, forceQuery, serverName string) (configList []byte, failClosed bool, err error) {
 	if echConfigList == "" {
 		return nil, false, nil
 	}
-	cfg, rErr := echResolve(echConfigList)
+	cfg, rErr := echResolve(echConfigList, serverName)
 	if rErr != nil {
 		if forceQuery == "full" {
 			// Fail closed: use an invalid config so the handshake fails and
