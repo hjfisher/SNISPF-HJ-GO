@@ -45,6 +45,12 @@ type Options struct {
 	// ECHGrease appends a GREASE Encrypted Client Hello extension to the
 	// upstream uTLS hello (Chrome-like; see openUpstream doc).
 	ECHGrease bool
+	// Real ECH (Xray-compatible). ECHConfigList is either a base64 ECHConfig
+	// or a DNS source "domain+https://doh" / "https://doh" / "udp://dns".
+	// ECHForceQuery "full" fails the connection when the config cannot be
+	// fetched (SNI never leaks); "best-effort" falls back to plain TLS.
+	ECHConfigList string
+	ECHForceQuery string
 	// Raw injection on the upstream connection (seq_id trick). When enabled
 	// and a raw backend is available, the MITM upstream dial is registered
 	// with the raw injector so an out-of-window fake-SNI hello is injected.
@@ -212,7 +218,7 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 		}
 	}
 
-	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, dialer, opts.ECHGrease)
+	up, err := openUpstream(ctx, activeIP, opts.ConnectPort, serverName, upALPN, opts.Fingerprint, opts.CipherSuites, dialer, opts.ECHGrease, opts.ECHConfigList, opts.ECHForceQuery)
 	if err != nil {
 		log.Printf("[%s] upstream connect %s:%d failed: %v", peer, activeIP, opts.ConnectPort, err)
 		releasePair(true)
@@ -361,7 +367,7 @@ func handleClient(ctx context.Context, rawConn net.Conn, opts *Options, maskerTe
 // impersonated hello match current Chrome exactly and exercises censor-side
 // ECH handling. Note: GREASE does NOT encrypt/hide the SNI — uTLS v1.8.2 has
 // no real (encrypting) client ECH yet; true ECH can be layered later.
-func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16, dialer *net.Dialer, echGrease bool) (net.Conn, error) {
+func openUpstream(ctx context.Context, activeIP string, connectPort int, serverName string, alpn []string, fingerprint string, cipherSuites []uint16, dialer *net.Dialer, echGrease bool, echConfigList string, echForceQuery string) (net.Conn, error) {
 	if dialer == nil {
 		dialer = &net.Dialer{Timeout: dialTimeout}
 	}
@@ -393,13 +399,34 @@ func openUpstream(ctx context.Context, activeIP string, connectPort int, serverN
 		return nil, err
 	}
 	utls.EnableWeakCiphers()
-	uconn := utls.UClient(raw, &utls.Config{
+
+	// Real ECH (Xray-compatible MITM_ECH_CONFIG_LIST) takes priority over the
+	// GREASE-only option. With ECH active the SNI travels encrypted in the
+	// inner hello; the outer hello carries the config's public_name. Note the
+	// plaintext serverName passed in becomes the inner (protected) SNI.
+	uTLSConfig := &utls.Config{
 		ServerName:         serverName,
 		InsecureSkipVerify: true,
 		NextProtos:         alpn,
-	}, id)
+	}
+	if echConfigList != "" {
+		cfg, failClosed, echErr := applyECH(echConfigList, echForceQuery)
+		if echErr != nil && failClosed {
+			log.Printf("[ECH] config fetch failed (force-query=full): %v — connection will fail closed", echErr)
+		} else if echErr != nil {
+			log.Printf("[ECH] config fetch failed, falling back to plain TLS: %v", echErr)
+		}
+		if cfg != nil {
+			// Per xray: with ECH the outer ALPN is h2,http/1.1 and the
+			// configured ALPN hides inside the encrypted hello.
+			uTLSConfig.EncryptedClientHelloConfigList = cfg
+			uTLSConfig.NextProtos = []string{"http/1.1"}
+		}
+	}
+
+	uconn := utls.UClient(raw, uTLSConfig, id)
 	uconn.SetSNI(serverName)
-	if echGrease {
+	if echGrease && uTLSConfig.EncryptedClientHelloConfigList == nil {
 		// The extension's writeToUConn points uconn.ech at it and the ECH
 		// generation hook runs inside MarshalClientHello.
 		uconn.Extensions = append(uconn.Extensions, &utls.GREASEECHExtension{})

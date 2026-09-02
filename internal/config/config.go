@@ -36,6 +36,8 @@ func DefaultConfig() *Config {
 		"MITM_ALPN":              []interface{}{"h2", "http/1.1"},
 		"MITM_USE_CLIENT_SNI":    false,
 		"MITM_ECH_GREASE":        false,
+		"MITM_ECH_CONFIG_LIST":   "",
+		"MITM_ECH_FORCE_QUERY":   "best-effort",
 		"MITM_RAW_INJECTION":     false,
 		"BYPASS_VPN":             false,
 		"MAX_ACTIVE_CONNS":       512,

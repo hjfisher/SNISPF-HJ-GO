@@ -522,6 +522,8 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 		ConnManager:  connManager,
 		Fingerprint:  fingerprintVal,
 		ECHGrease:    cfg.GetBool("MITM_ECH_GREASE", false),
+		ECHConfigList: cfg.GetString("MITM_ECH_CONFIG_LIST", ""),
+		ECHForceQuery: cfg.GetString("MITM_ECH_FORCE_QUERY", "best-effort"),
 		UseRawInjection: useMITMRaw,
 		RawInjector:     mitmRawPtr,
 		InterfaceIP:     &mitmInterfaceIP,
