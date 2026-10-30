@@ -3,7 +3,7 @@
   "LISTEN_PORT": 40443,
   "CONNECT_PORT": 443,
   "BYPASS_VPN": true,
-"_comment_method": "Bypass mode: 'direct' (no spoofing), 'fragment' (ClientHello fragmentation), 'fake_sni' (decoy SNI), 'combined' (fragment + fake SNI), or 'mitm' (TLS-terminating relay — the tool builds its own self-signed SSL, decrypts the client's session, then re-encrypts to the real upstream with a fresh ClientHello, i.e. the tls-decrypt / tls-repack-frommitm idea).",
+  "_comment_method": "Bypass mode: 'direct' (no spoofing), 'fragment' (ClientHello fragmentation), 'fake_sni' (decoy SNI), 'combined' (fragment + fake SNI), or 'mitm' (TLS-terminating relay — the tool builds its own self-signed SSL, decrypts the client's session, then re-encrypts to the real upstream with a fresh ClientHello, i.e. the tls-decrypt / tls-repack-frommitm idea).",
   "BYPASS_METHOD": "mitm",
   "FRAGMENT_STRATEGY": "multi",
   "FRAGMENT_DELAY": 0.02,
@@ -11,35 +11,50 @@
   "_comment_cipher_suites": "Custom upstream TLS cipher suites in xray cipherSuites format (colon-separated IANA names). Used for the upstream ClientHello in MITM mode and for the raw-injector fake hello in standard mode. Null = built-in defaults.",
   "CIPHER_SUITES": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
   "_comment_finalmask": "finalmask TCP fragmentation (faithful xray port). A JSON array of fragment rules, or a path to a JSON file containing such an array. Mirrors the FINALMASK_TCP in the reference tls-repack-frommitm outbound.",
- "FINALMASK_TCP": [{"type": "fragment", "settings": {"packets": "1-3", "lengths": ["50-100"], "delays": ["1-10"], "maxSplit": "10"}}],
+  "FINALMASK_TCP": [
+    {
+      "type": "fragment",
+      "settings": {
+        "packets": "1-3",
+        "lengths": [
+          "50-100"
+        ],
+        "delays": [
+          "1-10"
+        ],
+        "maxSplit": "10"
+      }
+    }
+  ],
   "_comment_mitm_cert": "MITM mode TLS certificate. Leave MITM_CERT_FILE/MITM_KEY_FILE as null to auto-generate + cache under ~/.snispf/ (stable SHA-256 fingerprint across restarts for pinning).",
   "MITM_CERT_FILE": null,
   "MITM_KEY_FILE": null,
   "MITM_CERT_CN": "SNISPF-HJ",
   "_comment_mitm_alpn": "ALPN protocols offered on the upstream (fresh) TLS connection. IMPORTANT: whatever the client negotiated (e.g. http/1.1 for VLESS+WS) is forwarded upstream INSTEAD of this list — offering h2 would make Cloudflare pick h2 and break the HTTP/1.1 WebSocket upgrade. This list is only used when the client sends no ALPN.",
-  "MITM_ALPN": ["h2", "http/1.1"],
+  "MITM_ALPN": [
+    "h2",
+    "http/1.1"
+  ],
   "_comment_mitm_use_client_sni": "The upstream TLS SNI cannot differ between your ISP and Cloudflare - both see the same bytes. When true (default, recommended): the upstream ClientHello carries the client's real SNI so Cloudflare routes correctly, and FINALMASK_TCP fragments that hello on the wire so DPI cannot reassemble/read the SNI. When false: the upstream uses each pool pair's FAKE_SNI (full IP x SNI pool + SNI discovery stay active) but routing then relies on the Host header alone - only works for setups whose CDN ignores SNI mismatch; most Cloudflare worker/VLESS setups FAIL with fake SNI.",
-"MITM_USE_CLIENT_SNI": true,
-"_comment_mitm_ech": "Real Encrypted Client Hello on the MITM upstream (Xray-compatible). MITM_ECH_CONFIG_LIST is one of: a base64 ECHConfigList, a DoH source 'example.com+https://1.1.1.1/dns-query', 'https://1.1.1.1/dns-query' (queries ServerName), or 'udp://1.1.1.1'. The type-HTTPS (65) DNS record's ECH config is fetched and cached by TTL; the SNI travels encrypted in the inner hello. MITM_ECH_FORCE_QUERY: 'full' fails the connection when the config cannot be fetched (SNI never leaks); 'best-effort' falls back to plain TLS.",
-"MITM_ECH_CONFIG_LIST": null,
-"MITM_ECH_FORCE_QUERY": "best-effort",
-"_comment_mitm_raw_injection": "Also run raw fake-SNI injection (seq_id trick) on the MITM upstream dial. Requires Administrator (Windows + WinDivert) or root/CAP_NET_RAW (Linux). Injects an out-of-window ClientHello carrying MITM_RAW_FAKE_SNI (decoy) so DPI sees a benign SNI, while the real routing SNI is still sent in the uTLS ClientHello. Combines with FINALMASK_TCP for defense-in-depth. When false/unsupported, MITM hides the SNI with FINALMASK_TCP fragmentation only. IMPORTANT: this is the raw packet injector, independent of the direct/combined forward-mode raw path.",
-"MITM_RAW_INJECTION": true,
+  "MITM_USE_CLIENT_SNI": true,
+  "_comment_mitm_ech": "Real Encrypted Client Hello on the MITM upstream (Xray-compatible). MITM_ECH_CONFIG_LIST is one of: a base64 ECHConfigList, a DoH source 'example.com+https://1.1.1.1/dns-query', 'https://1.1.1.1/dns-query' (queries ServerName), or 'udp://1.1.1.1'. The type-HTTPS (65) DNS record's ECH config is fetched and cached by TTL; the SNI travels encrypted in the inner hello. MITM_ECH_FORCE_QUERY: 'full' fails the connection when the config cannot be fetched (SNI never leaks); 'best-effort' falls back to plain TLS.",
+  "MITM_ECH_CONFIG_LIST": null,
+  "MITM_ECH_FORCE_QUERY": "best-effort",
+  "_comment_mitm_raw_injection": "Also run raw fake-SNI injection (seq_id trick) on the MITM upstream dial. Requires Administrator (Windows + WinDivert) or root/CAP_NET_RAW (Linux). Injects an out-of-window ClientHello carrying MITM_RAW_FAKE_SNI (decoy) so DPI sees a benign SNI, while the real routing SNI is still sent in the uTLS ClientHello. Combines with FINALMASK_TCP for defense-in-depth. When false/unsupported, MITM hides the SNI with FINALMASK_TCP fragmentation only. IMPORTANT: this is the raw packet injector, independent of the direct/combined forward-mode raw path.",
+  "MITM_RAW_INJECTION": true,
   "_comment_fingerprint": "Browser TLS fingerprint for the upstream ClientHello in MITM mode, mirroring xray-core: presets 'chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random' (pick a preset per connection), 'randomized' / 'randomizednoalpn' (unique randomized hello), 'unsafe' (plain Go TLS, no impersonation), plus pinned versions like 'hellochrome_120', 'hellofirefox_105', 'helloedge_106'; or null to disable (default). The upstream TLS handshake is delegated to the snispf-tls sidecar (tools/snispf-tls, based on uTLS — the same library xray uses) which sends a byte-perfect ClientHello. SNI and ALPN always stay client-mirrored. Requires the sidecar binary.",
   "FINGERPRINT": "unsafe",
   "_comment_fingerprint_tls_bin": "Explicit path to the snispf-tls sidecar executable. If unset, the tool looks in <repo>/bin/ (after running tools/snispf-tls/build.bat or build.sh) and then on PATH.",
   "FINGERPRINT_TLS_BIN": null,
-
-
   "_comment_pool": "Multi-IP + Multi-SNI pool settings (ported from SNI-Spoofing-HJ).",
   "_comment_pool2": "If both CONNECT_IPS and FAKE_SNIS contain more than one entry, all combinations are probed and the best ones are used automatically.",
   "_comment_pool3": "Set CONNECT_IPS / FAKE_SNIS to single-element lists to disable the pool and use the original single-target mode.",
-  "ACTIVE_SLOTS": 1,
+  "ACTIVE_SLOTS": 3,
   "HEALTH_CHECK_INTERVAL": 3,
   "HEALTH_CHECK_TIMEOUT": 1,
   "PROBE_COUNT": 5,
-  "LOSS_THRESHOLD": 0.20,
-  "DEAD_THRESHOLD": 0.80,
+  "LOSS_THRESHOLD": 0.2,
+  "DEAD_THRESHOLD": 0.8,
   "DRAIN_TIMEOUT": 30,
   "MAX_DRAINING": 5,
   "EVICT_EVERY": 10,
@@ -69,7 +84,7 @@
   "DISCOVERY_INTERVAL": 15,
   "DISCOVERY_PROBE_TRIES": 10,
   "DISCOVERY_TIMEOUT": 2.0,
-  "DISCOVERY_MIN_SUCCESS": 0.80,
+  "DISCOVERY_MIN_SUCCESS": 0.8,
   "DISCOVERY_MAX_IPS": 200,
   "_comment_sni_discovery": "Dynamic SNI discovery — pulls candidate domains from Tranco/Majestic/Umbrella + a curated seed list, checks Cloudflare hosting, and probes with a real TLS handshake before injecting them into the pool.",
   "_comment_sni_discovery2": "Inspired by https://github.com/hjfisher/cf_sni_scanner",
@@ -79,10 +94,9 @@
   "SNI_SOURCE_REFRESH_INTERVAL": 21600,
   "SNI_DISCOVERY_PROBE_TRIES": 10,
   "SNI_DISCOVERY_TIMEOUT": 2.0,
-  "SNI_DISCOVERY_MIN_SUCCESS": 0.80,
+  "SNI_DISCOVERY_MIN_SUCCESS": 0.8,
   "MAX_DYNAMIC_SNIS": 100,
   "SNI_DISCOVERY_DOMAINS_PER_SOURCE": 5000,
-
   "CONNECT_IPS": [
     "172.66.41.252",
     "108.162.196.145",
@@ -96,7 +110,6 @@
     "172.67.253.234",
     "104.19.229.21"
   ],
-
   "FAKE_SNIS": [
     "apple.com",
     "chat.deepseek.com",
@@ -137,5 +150,14 @@
     "sectigo.com",
     "speedtest.org",
     "static.cloudflareinsights.com"
-  ]
+  ],
+  "DATA_CHECK": true,
+  "DATA_CHECK_PATH": "/cdn-cgi/trace",
+  "DATA_CHECK_STRICT": false,
+  "DATA_CHECK_TIMEOUT": 3.0,
+  "LAST_GOOD_FILE": "./lastgood.json",
+  "LAST_GOOD_TTL_SECONDS": 86400,
+  "LAST_GOOD_SAVE_SECONDS": 30,
+  "CONFIG_WATCH": true,
+  "CONFIG_WATCH_SECONDS": 2.0
 }

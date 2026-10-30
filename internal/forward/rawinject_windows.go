@@ -49,9 +49,9 @@ const (
 )
 
 const wdFlagOutbound = 0x02 // bit1
-const wdFlagIPv6     = 0x10 // bit4
+const wdFlagIPv6 = 0x10     // bit4
 
-func (a *winDivertAddress) setOutbound()    { a[wdOffFlags] |= wdFlagOutbound }
+func (a *winDivertAddress) setOutbound() { a[wdOffFlags] |= wdFlagOutbound }
 func (a *winDivertAddress) setIfIdx(v uint32) {
 	binary.LittleEndian.PutUint32(a[wdOffIfIdx:], v)
 }
@@ -118,7 +118,7 @@ func (r *windowsRawInjector) Start() bool {
 	handle, _, callErr := procWinDivertOpen.Call(
 		uintptr(unsafe.Pointer(filterPtr)),
 		uintptr(winDivertLayerNetwork),
-		uintptr(0), // priority
+		uintptr(0),                  // priority
 		uintptr(winDivertFlagSniff), // SNIFF: observe without diverting normal traffic
 	)
 	h := syscall.Handle(handle)

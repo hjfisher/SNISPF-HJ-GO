@@ -28,13 +28,13 @@ func GetDefaultInterfaceIPv4(dest string) string {
 // NetworkMonitor watches for changes in the default interface IPv4 address
 // and invokes a callback when a change is detected.
 type NetworkMonitor struct {
-	dest         string
-	interval     time.Duration
-	callback     func(newIP string)
-	mu           sync.Mutex
-	lastIP       string
-	stop         chan struct{}
-	wg           sync.WaitGroup
+	dest     string
+	interval time.Duration
+	callback func(newIP string)
+	mu       sync.Mutex
+	lastIP   string
+	stop     chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewNetworkMonitor creates a new network monitor.

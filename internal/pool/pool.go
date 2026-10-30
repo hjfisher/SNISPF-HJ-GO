@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,6 +59,13 @@ type PairStats struct {
 	Probed            bool
 	InActivePool      bool
 
+	// dataCheckFailed is set once the data-plane probe proves the pair
+	// handshook but carried no data. It is sticky: while set, the pair is
+	// excluded from the stable and known candidate sets so it can never be
+	// promoted into the active pool. It is only ever set when DATA_CHECK is
+	// enabled, so behaviour with the check off is unchanged.
+	dataCheckFailed bool
+
 	forceClose     chan struct{}
 	forceClosed    bool
 	drainStartedAt *time.Time
@@ -80,6 +88,25 @@ func (p *PairStats) Unlock() { p.mu.Unlock() }
 
 // ForceCloseEvent returns a channel closed once the pair is force-closed.
 func (p *PairStats) ForceCloseEvent() <-chan struct{} { return p.forceClose }
+
+// setDataCheckOK records the outcome of the data-plane probe. A failed check
+// marks the pair as data-dead until a later probe succeeds.
+func (p *PairStats) setDataCheckOK(ok bool) {
+	p.mu.Lock()
+	if !ok {
+		p.dataCheckFailed = true
+	} else {
+		p.dataCheckFailed = false
+	}
+	p.mu.Unlock()
+}
+
+// DataCheckFailed reports whether the last data-plane probe failed.
+func (p *PairStats) DataCheckFailed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dataCheckFailed
+}
 
 // IsForceClosed reports whether the drain timeout has expired for this pair.
 func (p *PairStats) IsForceClosed() bool {
@@ -215,13 +242,16 @@ type QuarantineInfo struct {
 }
 
 // CombinationExplorer gradually discovers and health-checks the full
-// cartesian product of IPs × SNIs. Port of pool.py CombinationExplorer.
+// cartesian product of IPs ├ù SNIs. Port of pool.py CombinationExplorer.
 type CombinationExplorer struct {
 	Port          int
 	Timeout       time.Duration
 	ProbeCount    int
 	LossThreshold float64
 	DeadThreshold float64
+	// DataCheck configures the data-plane probe applied after a successful TLS
+	// handshake. Zero value means the check is disabled.
+	DataCheck DataCheckConfig
 	// ClientSniProvider returns the last observed client SNI + whether to use
 	// TLS probing (false = plain TCP connect fallback).
 	ClientSniProvider func() (string, bool)
@@ -235,7 +265,23 @@ type CombinationExplorer struct {
 	AllIPs          []string
 	AllSNIs         []string
 
+	// dataCheckStages counts probe outcomes per stage; see DataCheckCounters.
+	dataCheckStages *DataCheckCounters
+
+	// dial is an optional connection hook. When nil the explorer dials with a
+	// plain net.Dialer; tests override it to use in-memory pipes.
+	dial func(addr string) (net.Conn, error)
+
 	mu sync.Mutex
+}
+
+// dialConn opens a connection to addr.
+func (e *CombinationExplorer) dialConn(addr string) (net.Conn, error) {
+	if e.dial != nil {
+		return e.dial(addr)
+	}
+	dialer := &net.Dialer{Timeout: e.Timeout}
+	return dialer.Dial("tcp", addr)
 }
 
 func NewCombinationExplorer(combinations []PairKey, port int, timeout time.Duration, probeCount int, lossThreshold, deadThreshold float64, sniProvider func() (string, bool)) *CombinationExplorer {
@@ -251,6 +297,7 @@ func NewCombinationExplorer(combinations []PairKey, port int, timeout time.Durat
 		SNIOriginLedger:   make(map[string]string),
 		IPQuarantine:      make(map[string]*QuarantineInfo),
 		SNIQuarantine:     make(map[string]*QuarantineInfo),
+		dataCheckStages:   newDataCheckCounters(),
 	}
 	seenIPs := map[string]bool{}
 	seenSNIs := map[string]bool{}
@@ -295,7 +342,7 @@ func (e *CombinationExplorer) AllStats() []*PairStats {
 func (e *CombinationExplorer) KnownStats() []*PairStats {
 	var out []*PairStats
 	for _, ps := range e.Stats {
-		if ps.Probed {
+		if ps.Probed && !ps.DataCheckFailed() {
 			out = append(out, ps)
 		}
 	}
@@ -399,6 +446,48 @@ func (e *CombinationExplorer) AddUnexploredPair(ip, sni, ipOrigin, sniOrigin str
 	if !containsStr(e.AllSNIs, sni) {
 		e.AllSNIs = append(e.AllSNIs, sni)
 	}
+}
+
+// PrioritizePairs moves the given pairs to the front of the exploration queue,
+// in order, so a restart probes its last-known-good list before random
+// discovery. Pairs that are not part of the current combination set are added
+// with origin "lastgood" so they still receive a data-plane check.
+//
+// It returns the number of pairs queued.
+func (e *CombinationExplorer) PrioritizePairs(keys []PairKey) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	front := make([]PairKey, 0, len(keys))
+	seen := make(map[PairKey]bool, len(keys))
+	for _, k := range keys {
+		if k.IP == "" || k.SNI == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		if _, ok := e.Stats[k]; !ok {
+			e.Stats[k] = NewPairStats(k.IP, k.SNI, "lastgood", "lastgood")
+			if !containsStr(e.AllIPs, k.IP) {
+				e.AllIPs = append(e.AllIPs, k.IP)
+			}
+			if !containsStr(e.AllSNIs, k.SNI) {
+				e.AllSNIs = append(e.AllSNIs, k.SNI)
+			}
+		}
+		front = append(front, k)
+	}
+	if len(front) == 0 {
+		return 0
+	}
+
+	rest := make([]PairKey, 0, len(e.unexplored))
+	for _, k := range e.unexplored {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	e.unexplored = append(front, rest...)
+	return len(front)
 }
 
 // RemoveAllPairsForIP drops every live pair carrying the IP.
@@ -521,15 +610,33 @@ func (e *CombinationExplorer) ProbeOne(ps *PairStats) {
 		latencyMs := 0.0
 		start := time.Now()
 		addr := net.JoinHostPort(ps.IP, strconv.Itoa(e.Port))
-		dialer := &net.Dialer{Timeout: e.Timeout}
-		conn, err := dialer.Dial("tcp", addr)
+		conn, err := e.dialConn(addr)
 		if err == nil {
 			if useTLS {
 				_ = conn.SetDeadline(time.Now().Add(e.Timeout))
 				tconn := tls.Client(conn, &tls.Config{ServerName: probeSNI, InsecureSkipVerify: true})
 				if tconn.Handshake() == nil {
-					latencyMs = time.Since(start).Seconds() * 1000
-					success = true
+					if e.DataCheck.Enabled {
+						// A handshake alone proves nothing about the data
+						// plane: the peer may still black-hole every byte we
+						// send. Require an HTTP response on this same
+						// connection before calling the pair healthy.
+						ok, stage := dataCheck(tconn, probeSNI, e.DataCheck.Path, e.DataCheck.Timeout, e.DataCheck.Strict)
+						e.dataCheckStages.record(stage)
+						if ok {
+							latencyMs = time.Since(start).Seconds() * 1000
+							success = true
+							ps.setDataCheckOK(true)
+						} else {
+							ps.setDataCheckOK(false)
+							if DebugLogging.Load() {
+								log.Printf("Data check failed (stage=%s) for %s/%s", stage, ps.IP, ps.SNI)
+							}
+						}
+					} else {
+						latencyMs = time.Since(start).Seconds() * 1000
+						success = true
+					}
 				}
 				_ = tconn.Close()
 			} else {
@@ -546,7 +653,7 @@ func (e *CombinationExplorer) ProbeOne(ps *PairStats) {
 
 // probeConcurrency bounds simultaneous probe connections. Without this,
 // runProbesParallel spawned one goroutine PER PAIR — every health cycle
-// opened ~25 pairs × ProbeCount TLS handshakes at once and IP/SNI discovery
+// opened ~25 pairs ├ù ProbeCount TLS handshakes at once and IP/SNI discovery
 // bursts opened hundreds more, which network monitors count as an enormous
 // connection churn (and it hammers the radio, draining battery on Android).
 const probeConcurrency = 8
@@ -1140,6 +1247,8 @@ type ActivePool struct {
 	draining     []*PairStats
 	mu           sync.Mutex
 	refreshCount int
+
+	SaveSnapshot func()
 }
 
 func NewActivePool(e *CombinationExplorer, slots int, lossThreshold, drainTimeout float64, maxDraining, evictEvery, evictCount int, recycleEnabled bool, recycleEvery, recycleBatch int, recycleMinCooldown, recycleMaxQuarantine float64, quarantineScope string, sniEvictEvery, sniEvictCount int, sniRecycleEnabled bool, sniRecycleEvery, sniRecycleBatch int, sniRecycleMinCooldown, sniRecycleMaxQuarantine float64, sniQuarantineScope string) *ActivePool {
@@ -1295,6 +1404,9 @@ func (p *ActivePool) Refresh() {
 		log.Printf("Orphan sweep: quarantined %d IP(s) and %d SNI(s) with zero active pairs", ipOrphans, sniOrphans)
 	}
 
+	if p.SaveSnapshot != nil && (shouldEvictIP || shouldEvictSNI || ipOrphans > 0 || sniOrphans > 0) {
+		p.SaveSnapshot()
+	}
 	p.logPool("REFRESH")
 }
 
@@ -1388,6 +1500,83 @@ type ConnectionManager struct {
 	Pool     *ActivePool
 
 	UseClientSNIProbes bool
+
+	LastGoodPath    string
+	LastGoodSaveSec int
+	lastCheckedAt   time.Time
+	lastWrittenAt   time.Time
+	lastSavedAt     time.Time
+	lastSavedHash   string
+	lastGoodMu      sync.Mutex
+}
+
+func (m *ConnectionManager) SetLastGoodV2(path string, saveSec int) {
+	m.lastGoodMu.Lock()
+	defer m.lastGoodMu.Unlock()
+	m.LastGoodPath = path
+	m.LastGoodSaveSec = saveSec
+}
+
+func (m *ConnectionManager) SaveSnapshotNow() {
+	if m.LastGoodPath == "" {
+		return
+	}
+	m.lastGoodMu.Lock()
+	defer m.lastGoodMu.Unlock()
+
+	now := time.Now()
+	m.lastCheckedAt = now
+
+	doc := m.Explorer.Snapshot()
+	hash := ComputeSnapshotHash(doc)
+	if hash == m.lastSavedHash {
+		return
+	}
+	if err := SaveSnapshotV2(m.LastGoodPath, doc); err != nil {
+		log.Printf("Last-good state save failed: %v", err)
+		return
+	}
+	m.lastSavedHash = hash
+	m.lastSavedAt = now
+	m.lastWrittenAt = now
+}
+
+func (m *ConnectionManager) StartLastGoodPersistence(ctx context.Context) {
+	m.lastGoodMu.Lock()
+	path := m.LastGoodPath
+	saveSec := m.LastGoodSaveSec
+	m.lastGoodMu.Unlock()
+
+	if path == "" || saveSec <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(saveSec) * time.Second)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.SaveSnapshotNow()
+			}
+		}
+	}()
+}
+
+func (m *ConnectionManager) SaveShutdown(timeout time.Duration) {
+	if m.LastGoodPath == "" {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		m.SaveSnapshotNow()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
 }
 
 func NewConnectionManager(combinations []PairKey, port int, healthCheckInterval, healthCheckTimeout time.Duration, probeCount, activeSlots int, lossThreshold, deadThreshold, drainTimeout float64, maxDraining, evictEvery, evictCount int, recycleEnabled bool, recycleEvery, recycleBatch int, recycleMinCooldown, recycleMaxQuarantine float64, quarantineScope string, sniEvictEvery, sniEvictCount int, sniRecycleEnabled bool, sniRecycleEvery, sniRecycleBatch int, sniRecycleMinCooldown, sniRecycleMaxQuarantine float64, sniQuarantineScope string, useClientSNIProbes bool) *ConnectionManager {
@@ -1486,7 +1675,14 @@ func BuildConnectionManager(cfg *config.Config, sniAxis bool) *ConnectionManager
 	quarantineScope := validateScope(cfg.GetString("QUARANTINE_SCOPE", "both"), "QUARANTINE_SCOPE")
 	sniQuarantineScope := validateScope(cfg.GetString("SNI_QUARANTINE_SCOPE", "both"), "SNI_QUARANTINE_SCOPE")
 
-	return NewConnectionManager(
+	dataCheck := DataCheckConfig{
+		Enabled: cfg.GetBool("DATA_CHECK", true),
+		Path:    cfg.GetString("DATA_CHECK_PATH", "/cdn-cgi/trace"),
+		Strict:  cfg.GetBool("DATA_CHECK_STRICT", false),
+		Timeout: time.Duration(cfg.GetFloat("DATA_CHECK_TIMEOUT", 3.0)) * time.Second,
+	}
+
+	m := NewConnectionManager(
 		combinations,
 		cfg.GetInt("CONNECT_PORT", 443),
 		time.Duration(cfg.GetFloat("HEALTH_CHECK_INTERVAL", 30))*time.Second,
@@ -1515,6 +1711,32 @@ func BuildConnectionManager(cfg *config.Config, sniAxis bool) *ConnectionManager
 		sniQuarantineScope,
 		!sniAxis,
 	)
+	m.Explorer.DataCheck = dataCheck
+
+	// Cold-start warm-up: probe the pairs that worked last time before random
+	// discovery. Each one still has to pass the data-plane check (when DATA_CHECK
+	// is on) before it can enter the active pool.
+	if path := strings.TrimSpace(cfg.GetString("LAST_GOOD_FILE", "")); path != "" {
+		ttl := time.Duration(cfg.GetInt("LAST_GOOD_TTL_SECONDS", 86400)) * time.Second
+		saveSec := cfg.GetInt("LAST_GOOD_SAVE_SECONDS", 30)
+		if saveSec <= 0 {
+			saveSec = 30
+		}
+		doc, err := LoadSnapshotV2(path, ttl, time.Now())
+		if err != nil {
+			log.Printf("Last-good state: ignoring %s: %v", path, err)
+		} else if doc != nil {
+			now := time.Now()
+			age := now.Sub(time.Unix(doc.SavedAt, 0))
+			restored := m.Explorer.Restore(doc, now)
+			log.Printf("restored %d IPs, %d SNIs, %d pairs from %s (saved %v ago); verifying before use",
+				len(doc.IPs), len(doc.SNIs), restored, path, age.Truncate(time.Second))
+		}
+		m.SetLastGoodV2(path, saveSec)
+		m.Pool.SaveSnapshot = m.SaveSnapshotNow
+	}
+
+	return m
 }
 
 func validateScope(value, key string) string {
@@ -1690,12 +1912,21 @@ func (m *ConnectionManager) StatsLine() string {
 	}
 	m.Pool.mu.Unlock()
 
+	stages := e.dataCheckStages.snapshot()
+
+	m.lastGoodMu.Lock()
+	lastChecked := m.lastCheckedAt.Unix()
+	lastWritten := m.lastWrittenAt.Unix()
+	m.lastGoodMu.Unlock()
+
 	return fmt.Sprintf(
-		"pairs=%d stable=%d weak=%d dead=%d unprobed=%d slots=%d draining=%d active_conns=%d total_conns=%d static_ips=%d dynamic_ips=%d static_snis=%d dynamic_snis=%d ip_quarantine=%d sni_quarantine=%d",
+		"pairs=%d stable=%d weak=%d dead=%d unprobed=%d slots=%d draining=%d active_conns=%d total_conns=%d static_ips=%d dynamic_ips=%d static_snis=%d dynamic_snis=%d ip_quarantine=%d sni_quarantine=%d data_ok=%d data_write=%d data_read=%d data_status=%d last_checked_at=%d last_written_at=%d",
 		len(all), stable, weak, dead, len(all)-(stable+weak+dead),
 		active, draining, activeConns, totalConns,
 		len(staticIPs), len(dynamicIPs), len(staticSNIs), len(dynamicSNIs),
 		ipQuarantine, sniQuarantine,
+		stages[dataStageOK], stages[dataStageWrite], stages[dataStageRead], stages[dataStageStatus],
+		lastChecked, lastWritten,
 	)
 }
 

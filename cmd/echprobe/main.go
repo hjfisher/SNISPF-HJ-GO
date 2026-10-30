@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
 	"github.com/miekg/dns"
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
 )
 
@@ -152,10 +152,10 @@ func main() {
 	}
 
 	uconn := utls.UClient(raw, &utls.Config{
-		ServerName:                      *sni,
-		InsecureSkipVerify:              *insecure,
-		NextProtos:                      alpnList,
-		EncryptedClientHelloConfigList:  echList,
+		ServerName:                     *sni,
+		InsecureSkipVerify:             *insecure,
+		NextProtos:                     alpnList,
+		EncryptedClientHelloConfigList: echList,
 	}, utls.HelloChrome_Auto)
 	uconn.SetSNI(*sni)
 	// Pin the advertised ALPN to the requested list (what xray/v2rayNG do):

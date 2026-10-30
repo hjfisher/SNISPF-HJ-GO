@@ -26,19 +26,19 @@ import (
 	"snispf-hj-go/internal/utils"
 )
 
-const version = "1.2.0"
+// version is set at build time via -ldflags "-X main.version=..." by GoReleaser.
+var version = "1.3.0"
 
-const banner = `
-███████╗███╗   ██╗██╗███████╗██████╗ ███████╗    ██╗  ██╗     ██╗       ██████╗  ██████╗ 
-██╔════╝████╗  ██║██║██╔════╝██╔══██╗██╔════╝    ██║  ██║     ██║      ██╔════╝ ██╔═══██╗
-███████╗██╔██╗ ██║██║███████╗██████╔╝█████╗█████╗███████║     ██║█████╗██║  ███╗██║   ██║
-╚════██║██║╚██╗██║██║╚════██║██╔═══╝ ██╔══╝╚════╝██╔══██║██   ██║╚════╝██║   ██║██║   ██║
-███████║██║ ╚████║██║███████║██║     ██║         ██║  ██║╚█████╔╝      ╚██████╔╝╚██████╔╝
-╚══════╝╚═╝  ╚═══╝╚═╝╚══════╝╚═╝     ╚═╝         ╚═╝  ╚═╝ ╚════╝        ╚═════╝  ╚═════╝ 
-
-     SNISPF-HJ-GO - Cross-Platform DPI Bypass Tool (Go port)         
-     Works on Windows / macOS / Linux                               
-`
+const banner = "\n" +
+	"\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557    \u2588\u2588\u2557  \u2588\u2588\u2557     \u2588\u2588\u2557       \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \n" +
+	"\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d    \u2588\u2588\u2551  \u2588\u2588\u2551     \u2588\u2588\u2551      \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557\n" +
+	"\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551     \u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551\n" +
+	"\u255a\u2550\u2550\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2550\u2550\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588   \u2588\u2588\u2551\u255a\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2551   \u2588\u2588\u2551\n" +
+	"\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2551         \u2588\u2588\u2551  \u2588\u2588\u2551\u255a\u2588\u2588\u2588\u2588\u2588\u2554\u255d      \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\n" +
+	"\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u255d\u255a\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d     \u255a\u2550\u255d         \u255a\u2550\u255d  \u255a\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u255d        \u255a\u2550\u2550\u2550\u2550\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u255d\n" +
+	"\n" +
+	"     SNISPF-HJ-GO - Cross-Platform DPI Bypass Tool (Go port)         \n" +
+	"     Works on Windows / macOS / Linux                               \n"
 
 // ─── Config helpers ─────────────────────────────────────────────────────────
 
@@ -475,10 +475,10 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 				sniDisc.Start()
 				log.Printf("Dynamic SNI discovery active -- batch=%d  interval=%ds  source_refresh=%ds",
 					sniDisc.ScanBatch, int(sniDisc.ScanInterval.Seconds()), int(sniDisc.SourceRefreshInterval.Seconds()))
-} else {
-			log.Printf("Dynamic SNI discovery: disabled (set DYNAMIC_SNI_DISCOVERY=true in config to enable)")
+			} else {
+				log.Printf("Dynamic SNI discovery: disabled (set DYNAMIC_SNI_DISCOVERY=true in config to enable)")
+			}
 		}
-	}
 	}
 
 	// Raw injection on the MITM upstream (fake-SNI seq_id trick). Requires a
@@ -508,21 +508,21 @@ func runMITM(ctx context.Context, cfg *config.Config) {
 	}()
 
 	opts := &mitm.Options{
-		ListenHost:   cfg.GetString("LISTEN_HOST", "0.0.0.0"),
-		ListenPort:   cfg.GetInt("LISTEN_PORT", 40443),
-		ConnectIP:    cfg.GetString("CONNECT_IP", "104.18.38.202"),
-		ConnectPort:  cfg.GetInt("CONNECT_PORT", 443),
-		FakeSNI:      cfg.GetString("FAKE_SNI", "cdnjs.cloudflare.com"),
-		CipherSuites: cipherSuiteIDs,
-		ALPN:         alpn,
-		MaskerRules:  maskerRules,
-		CertFile:     certPath,
-		KeyFile:      keyPath,
-		UseClientSNI: useClientSNI,
-		ConnManager:  connManager,
-		Fingerprint:  fingerprintVal,
-		ECHConfigList: cfg.GetString("MITM_ECH_CONFIG_LIST", ""),
-		ECHForceQuery: cfg.GetString("MITM_ECH_FORCE_QUERY", "best-effort"),
+		ListenHost:      cfg.GetString("LISTEN_HOST", "0.0.0.0"),
+		ListenPort:      cfg.GetInt("LISTEN_PORT", 40443),
+		ConnectIP:       cfg.GetString("CONNECT_IP", "104.18.38.202"),
+		ConnectPort:     cfg.GetInt("CONNECT_PORT", 443),
+		FakeSNI:         cfg.GetString("FAKE_SNI", "cdnjs.cloudflare.com"),
+		CipherSuites:    cipherSuiteIDs,
+		ALPN:            alpn,
+		MaskerRules:     maskerRules,
+		CertFile:        certPath,
+		KeyFile:         keyPath,
+		UseClientSNI:    useClientSNI,
+		ConnManager:     connManager,
+		Fingerprint:     fingerprintVal,
+		ECHConfigList:   cfg.GetString("MITM_ECH_CONFIG_LIST", ""),
+		ECHForceQuery:   cfg.GetString("MITM_ECH_FORCE_QUERY", "best-effort"),
 		UseRawInjection: useMITMRaw,
 		RawInjector:     mitmRawPtr,
 		InterfaceIP:     &mitmInterfaceIP,

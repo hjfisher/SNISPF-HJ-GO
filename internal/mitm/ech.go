@@ -7,13 +7,16 @@
 // bytes untouched and cannot encrypt them).
 //
 // Config formats (Xray-compatible):
-//   "MITM_ECH_CONFIG_LIST": "cloudflare.com+https://cloudflare-dns.com/dns-query"
-//                          | "https://1.1.1.1/dns-query"
-//                          | "udp://1.1.1.1"
-//                          | "<base64 ECHConfigList>"
+//
+//	"MITM_ECH_CONFIG_LIST": "cloudflare.com+https://cloudflare-dns.com/dns-query"
+//	                       | "https://1.1.1.1/dns-query"
+//	                       | "udp://1.1.1.1"
+//	                       | "<base64 ECHConfigList>"
+//
 // MITM_ECH_FORCE_QUERY: "full"       — fail the connection if the ECH config
-//                                       cannot be fetched (SNI never leaks)
-//                       "best-effort" — fall back to plain TLS on failure
+//
+//	                cannot be fetched (SNI never leaks)
+//	"best-effort" — fall back to plain TLS on failure
 package mitm
 
 import (
@@ -30,8 +33,8 @@ import (
 	"sync"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
 	"github.com/miekg/dns"
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
 )
 
@@ -84,7 +87,7 @@ type echConfigCache struct {
 }
 
 var (
-	echCaches   sync.Map // string -> *echConfigCache
+	echCaches     sync.Map // string -> *echConfigCache
 	echDOHClients sync.Map // string -> *http.Client
 )
 
